@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LearnEngine: The 1960s in America</title>
+<style>
+:root{--bg:#0a0a0f;--surface:#12121a;--s2:#1a1a25;--s3:#222233;--border:#2a2a3a;--text:#e0e0e8;--muted:#8888a0;--accent:#6366f1;--glow:rgba(99,102,241,.15);--green:#22c55e;--red:#ef4444;--yellow:#eab308;--orange:#f97316;--cyan:#06b6d4;--pink:#ec4899;--radius:12px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;min-height:100vh;overflow-x:hidden}
+.app{max-width:800px;margin:0 auto;padding:20px}
+
+/* Top bar */
+.topbar{display:flex;justify-content:space-between;align-items:center;padding:12px 0;margin-bottom:8px}
+.topbar h1{font-size:18px;font-weight:700;letter-spacing:-.5px}
+.topbar h1 span{color:var(--accent)}
+.stats-row{display:flex;gap:16px;font-size:13px;color:var(--muted)}
+.stats-row .val{color:var(--accent);font-weight:700}
+.streak-badge{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;background:rgba(234,179,8,.12);color:var(--yellow)}
+
+/* XP bar */
+.xp-bar-container{margin-bottom:24px}
+.xp-label{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px}
+.xp-bar{width:100%;height:8px;background:var(--s2);border-radius:4px;overflow:hidden}
+.xp-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--cyan));border-radius:4px;transition:width .6s ease}
+
+/* Nav tabs */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:24px}
+.tab{padding:10px 18px;cursor:pointer;font-size:14px;color:var(--muted);border-bottom:2px solid transparent;transition:all .2s;font-weight:500}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* Mode containers */
+.mode{display:none}
+.mode.active{display:block}
+
+/* Cards */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:16px;transition:all .3s}
+
+/* Quiz mode */
+.q-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.q-num{font-size:11px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:1.5px}
+.q-diff{font-size:10px;padding:2px 8px;border-radius:4px;font-weight:700}
+.q-diff.easy{background:rgba(34,197,94,.12);color:var(--green)}
+.q-diff.medium{background:rgba(234,179,8,.12);color:var(--yellow)}
+.q-diff.hard{background:rgba(239,68,68,.12);color:var(--red)}
+.q-topic{font-size:11px;color:var(--muted);margin-bottom:12px}
+.q-text{font-size:16px;font-weight:500;margin-bottom:18px;line-height:1.6}
+.option{display:block;width:100%;text-align:left;padding:12px 16px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;margin-bottom:8px;font-size:14px;transition:all .15s;font-family:inherit;line-height:1.5}
+.option:hover:not(.locked){border-color:var(--accent);background:var(--glow)}
+.option.selected{border-color:var(--accent);background:var(--glow)}
+.option.correct{border-color:var(--green);background:rgba(34,197,94,.08)}
+.option.incorrect{border-color:var(--red);background:rgba(239,68,68,.08)}
+.option.locked{cursor:default}
+.badge{display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:50%;background:var(--s2);font-weight:700;font-size:12px;margin-right:10px}
+
+/* Feedback panel */
+.feedback{margin-top:16px;padding:20px;border-radius:10px;border:1px solid var(--border);display:none;line-height:1.7}
+.feedback.show{display:block}
+.feedback.correct-fb{background:rgba(34,197,94,.04);border-color:rgba(34,197,94,.2)}
+.feedback.incorrect-fb{background:rgba(239,68,68,.04);border-color:rgba(239,68,68,.2)}
+.fb-header{font-weight:700;font-size:15px;margin-bottom:8px}
+.fb-header.correct-h{color:var(--green)}
+.fb-header.incorrect-h{color:var(--red)}
+.fb-explain{font-size:14px;color:var(--text);margin-bottom:12px}
+.fb-reteach{font-size:14px;color:var(--cyan);padding:12px;background:rgba(6,182,212,.06);border-radius:8px;margin-bottom:12px;border-left:3px solid var(--cyan)}
+.fb-connection{font-size:13px;color:var(--pink);padding:10px 12px;background:rgba(236,72,153,.06);border-radius:8px;border-left:3px solid var(--pink);margin-bottom:12px}
+.fb-deeper{font-size:13px;color:var(--accent);font-style:italic;padding-top:8px;border-top:1px solid var(--border)}
+
+.btn{padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:700;transition:all .2s;font-family:inherit}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#5558e6}
+.btn-sm{padding:8px 16px;font-size:13px}
+.btn-ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.btn-ghost:hover{background:var(--glow)}
+.next-btn{margin-top:16px}
+
+/* Progress ring */
+.progress-ring{position:relative;display:inline-flex;align-items:center;justify-content:center}
+.progress-ring svg{transform:rotate(-90deg)}
+.progress-ring .ring-text{position:absolute;font-size:14px;font-weight:800}
+
+/* Flashcard mode */
+.flashcard{perspective:1000px;width:100%;min-height:280px;cursor:pointer;margin-bottom:16px}
+.flashcard-inner{position:relative;width:100%;min-height:280px;transition:transform .6s;transform-style:preserve-3d}
+.flashcard.flipped .flashcard-inner{transform:rotateY(180deg)}
+.flashcard-face{position:absolute;width:100%;min-height:280px;backface-visibility:hidden;border-radius:var(--radius);padding:32px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center}
+.flashcard-front{background:linear-gradient(135deg,var(--surface),var(--s2));border:1px solid var(--border)}
+.flashcard-back{background:linear-gradient(135deg,var(--s2),var(--s3));border:1px solid var(--accent);transform:rotateY(180deg)}
+.flashcard-front .q-text{font-size:18px;margin-bottom:0}
+.flashcard-back .answer{font-size:16px;line-height:1.7}
+.flashcard-hint{font-size:12px;color:var(--muted);margin-top:12px}
+.flashcard-btns{display:flex;gap:8px;justify-content:center;margin-top:12px}
+.fc-btn{padding:10px 20px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;transition:all .2s}
+.fc-btn.hard{background:rgba(239,68,68,.08);color:var(--red);border-color:var(--red)}
+.fc-btn.hard:hover{background:rgba(239,68,68,.15)}
+.fc-btn.okay{background:rgba(234,179,8,.08);color:var(--yellow);border-color:var(--yellow)}
+.fc-btn.okay:hover{background:rgba(234,179,8,.15)}
+.fc-btn.easy{background:rgba(34,197,94,.08);color:var(--green);border-color:var(--green)}
+.fc-btn.easy:hover{background:rgba(34,197,94,.15)}
+
+/* Concept map */
+.concept-node{display:inline-block;padding:8px 14px;border-radius:20px;font-size:13px;font-weight:600;margin:4px;cursor:pointer;transition:all .2s;border:1.5px solid var(--border)}
+.concept-node:hover{transform:scale(1.05)}
+.concept-node.mastered{border-color:var(--green);color:var(--green);background:rgba(34,197,94,.08)}
+.concept-node.learning{border-color:var(--yellow);color:var(--yellow);background:rgba(234,179,8,.08)}
+.concept-node.weak{border-color:var(--red);color:var(--red);background:rgba(239,68,68,.08)}
+.concept-node.unseen{border-color:var(--border);color:var(--muted)}
+.connection-line{font-size:12px;color:var(--muted);padding:8px 16px;background:var(--s2);border-radius:8px;margin:8px 0;line-height:1.6}
+.map-detail{padding:16px;background:var(--s2);border-radius:8px;margin-top:12px;font-size:14px;line-height:1.7;border:1px solid var(--border)}
+
+/* Score screen */
+.score-screen{text-align:center;padding:32px 0}
+.score-big{font-size:64px;font-weight:800}
+.score-big.great{color:var(--green)}
+.score-big.okay{color:var(--yellow)}
+.score-big.poor{color:var(--red)}
+.xp-earned{font-size:20px;color:var(--cyan);font-weight:700;margin:8px 0}
+.score-sub{font-size:16px;color:var(--muted)}
+
+/* Animations */
+@keyframes slideIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+@keyframes xpPop{0%{opacity:0;transform:translateY(0) scale(.5)}50%{opacity:1;transform:translateY(-20px) scale(1.2)}100%{opacity:0;transform:translateY(-40px) scale(1)}}
+.slide-in{animation:slideIn .4s ease}
+.xp-pop{position:fixed;top:50%;left:50%;font-size:24px;font-weight:800;color:var(--cyan);pointer-events:none;animation:xpPop 1s ease forwards;z-index:999}
+
+/* Responsive */
+@media(max-width:600px){.app{padding:12px}.stats-row{gap:8px;font-size:11px}.tab{padding:8px 12px;font-size:13px}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+<!-- Top Bar -->
+<div class="topbar">
+  <h1><span>Learn</span>Engine</h1>
+  <div class="stats-row">
+    <span class="streak-badge" id="streakBadge">&#128293; 0</span>
+    <span><span class="val" id="xpDisplay">0</span> XP</span>
+    <span>Lvl <span class="val" id="levelDisplay">1</span></span>
+  </div>
+</div>
+
+<!-- XP Progress Bar -->
+<div class="xp-bar-container">
+  <div class="xp-label"><span id="xpLabelLeft">Level 1</span><span id="xpLabelRight">0 / 100 XP</span></div>
+  <div class="xp-bar"><div class="xp-fill" id="xpBar" style="width:0%"></div></div>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+  <div class="tab active" onclick="switchMode('quiz')">Quiz</div>
+  <div class="tab" onclick="switchMode('flashcards')">Flashcards</div>
+  <div class="tab" onclick="switchMode('map')">Concept Map</div>
+  <div class="tab" onclick="switchMode('review')">Review</div>
+</div>
+
+<!-- Quiz Mode -->
+<div class="mode active" id="mode-quiz"></div>
+
+<!-- Flashcard Mode -->
+<div class="mode" id="mode-flashcards"></div>
+
+<!-- Concept Map Mode -->
+<div class="mode" id="mode-map"></div>
+
+<!-- Review / Score Mode -->
+<div class="mode" id="mode-review"></div>
+</div>
+
+<script>
+// ===================== DATA =====================
+const concepts = {
+  "sit-ins": {name:"Sit-In Movement", topic:"Civil Rights Movement", mastery:0, exposures:0,
+    explanation:"The Greensboro sit-ins (1960) demonstrated that ordinary students could challenge segregation through nonviolent direct action. This grassroots approach spawned SNCC and shifted the movement's center of gravity from established organizations to younger activists.",
+    connections:["freedom-rides","civil-rights-act","student-movement"]},
+  "freedom-rides": {name:"Freedom Rides", topic:"Civil Rights Movement", mastery:0, exposures:0,
+    explanation:"Freedom Riders tested Supreme Court rulings that banned segregation on interstate buses. They were met with extreme violence, which drew national attention and forced federal intervention.",
+    connections:["sit-ins","jfk-civil-rights","civil-rights-act"]},
+  "jfk-civil-rights": {name:"JFK & Civil Rights", topic:"JFK Presidency", mastery:0, exposures:0,
+    explanation:"Kennedy was initially cautious on civil rights because Cold War crises (Bay of Pigs, Cuban Missile Crisis) consumed his bandwidth, and he needed Southern Democratic votes. The 1963 demonstrations forced his hand.",
+    connections:["cold-war","civil-rights-act","birmingham"]},
+  "birmingham": {name:"Birmingham & Letter from Jail", topic:"Civil Rights Movement", mastery:0, exposures:0,
+    explanation:"MLK's 1963 Birmingham campaign and his Letter from Birmingham Jail articulated the moral urgency of direct action against unjust laws, responding to white moderates who urged patience.",
+    connections:["march-on-washington","jfk-civil-rights","civil-rights-act"]},
+  "march-on-washington": {name:"March on Washington", topic:"Civil Rights Movement", mastery:0, exposures:0,
+    explanation:"The 1963 March on Washington (largest demonstration in US history at that time) demanded civil rights legislation, public works, higher minimum wage, and an end to employment discrimination.",
+    connections:["birmingham","civil-rights-act","i-have-a-dream"]},
+  "civil-rights-act": {name:"Civil Rights Act of 1964", topic:"Civil Rights Legislation", mastery:0, exposures:0,
+    explanation:"Banned discrimination in employment and public accommodations. Built on the commerce clause rather than the 14th Amendment. LBJ pushed it through after JFK's assassination.",
+    connections:["voting-rights-act","jfk-civil-rights","great-society"]},
+  "voting-rights-act": {name:"Voting Rights Act of 1965", topic:"Civil Rights Legislation", mastery:0, exposures:0,
+    explanation:"Eliminated literacy tests and other barriers to Black voter registration, particularly in the South. One of the most effective pieces of civil rights legislation ever passed.",
+    connections:["civil-rights-act","great-society","lbj"]},
+  "great-society": {name:"LBJ's Great Society", topic:"Great Society", mastery:0, exposures:0,
+    explanation:"LBJ's domestic agenda created Medicare, Medicaid, and War on Poverty programs. Expanded New Deal promises but treated poverty as a social problem (training) rather than economic one (jobs/income).",
+    connections:["civil-rights-act","war-on-poverty","lbj"]},
+  "war-on-poverty": {name:"War on Poverty's Flaw", topic:"Great Society", mastery:0, exposures:0,
+    explanation:"Focused on training people rather than creating jobs or guaranteed income. Failed to account for deindustrialization shifting economy from high-wage manufacturing to low-wage service jobs.",
+    connections:["great-society","foner-legacy","lbj"]},
+  "vietnam": {name:"Vietnam Escalation", topic:"Vietnam War", mastery:0, exposures:0,
+    explanation:"Gulf of Tonkin Resolution (1964) gave LBJ authority to escalate. By 1968, over 500,000 troops were in Vietnam. The war was never formally declared, exemplifying mission creep.",
+    connections:["anti-war","cold-war","lbj"]},
+  "anti-war": {name:"Anti-War Movement", topic:"Vietnam War", mastery:0, exposures:0,
+    explanation:"College students opposed the war partly from self-interest (student deferments protected them but not their friends). The deferment system created a class divide in who actually fought.",
+    connections:["vietnam","student-movement","counterculture"]},
+  "student-movement": {name:"Student Movement & SDS", topic:"Social Movements", mastery:0, exposures:0,
+    explanation:"Students for a Democratic Society (SDS) and the broader student movement sought participatory democracy and opposed both racial injustice and the Vietnam War.",
+    connections:["anti-war","sit-ins","counterculture"]},
+  "stonewall": {name:"Stonewall Uprising", topic:"Social Movements", mastery:0, exposures:0,
+    explanation:"June 1969: police raided the Stonewall Inn, and the gay community fought back with sustained demonstrations. Touched off the modern gay liberation movement. Key participants were transgender women of color.",
+    connections:["civil-rights-act","personal-political","warren-court"]},
+  "feminine-mystique": {name:"The Feminine Mystique", topic:"Women's Movement", mastery:0, exposures:0,
+    explanation:"Betty Friedan's 1963 book challenged the idea that women should find fulfillment solely through homemaking. Identified 'the problem that has no name.' Launched second-wave feminism but centered white middle-class experience.",
+    connections:["personal-political","equal-pay-act","warren-court"]},
+  "personal-political": {name:"'The Personal is Political'", topic:"Women's Movement", mastery:0, exposures:0,
+    explanation:"1960s feminists reframed personal experiences (pay, childcare, abortion) as political issues requiring collective action. This systems-thinking framework influenced all subsequent social justice movements.",
+    connections:["feminine-mystique","stonewall","warren-court"]},
+  "equal-pay-act": {name:"Equal Pay Act of 1963", topic:"Civil Rights Legislation", mastery:0, exposures:0,
+    explanation:"Congressional response to gender pay discrimination. An early legislative win for the women's movement, though enforcement gaps meant the pay gap persisted for decades.",
+    connections:["feminine-mystique","civil-rights-act","personal-political"]},
+  "warren-court": {name:"Warren Court Rights Revolution", topic:"Warren Court", mastery:0, exposures:0,
+    explanation:"The Supreme Court under Chief Justice Earl Warren expanded civil liberties dramatically: free speech, press freedom (NYT v. Sullivan), interracial marriage (Loving v. Virginia), privacy rights (Griswold), criminal suspects' rights (Miranda).",
+    connections:["loving-v-virginia","miranda","griswold"]},
+  "loving-v-virginia": {name:"Loving v. Virginia", topic:"Warren Court", mastery:0, exposures:0,
+    explanation:"1967: Struck down laws banning interracial marriage. Established marriage as a fundamental right under the 14th Amendment. Later cited in Obergefell v. Hodges (2015) for same-sex marriage.",
+    connections:["warren-court","civil-rights-act","stonewall"]},
+  "miranda": {name:"Miranda v. Arizona", topic:"Warren Court", mastery:0, exposures:0,
+    explanation:"Required police to inform suspects of their rights before interrogation. Created the 'Miranda warning' that became a cornerstone of criminal procedure.",
+    connections:["warren-court","griswold"]},
+  "griswold": {name:"Griswold v. Connecticut", topic:"Warren Court", mastery:0, exposures:0,
+    explanation:"1965: Established a constitutional right to privacy regarding contraception. This privacy doctrine later extended to abortion in Roe v. Wade (1973, Burger Court, not Warren Court).",
+    connections:["warren-court","personal-political","feminine-mystique"]},
+  "foner-legacy": {name:"Legacy: Progress & Unsolved Problems", topic:"Legacy of the 1960s", mastery:0, exposures:0,
+    explanation:"Per Eric Foner: the gap in education/income/employment narrowed, but urban poverty persisted. Deindustrialization and suburban exclusion kept the median wealth gap intact. Legislative wins don't automatically fix structural economic problems.",
+    connections:["war-on-poverty","civil-rights-act","continuity-thesis"]},
+  "continuity-thesis": {name:"Continuity vs. Revolution", topic:"Historical Interpretation", mastery:0, exposures:0,
+    explanation:"Green argues the 1960s changes resulted from a process going on for decades or centuries, not a sudden revolution. This frames the decade as an acceleration point in long-running trajectories, built on groundwork from the 1940s-50s.",
+    connections:["foner-legacy","sit-ins","warren-court"]},
+  "cold-war": {name:"Cold War Context", topic:"JFK Presidency", mastery:0, exposures:0,
+    explanation:"The Cold War (Bay of Pigs, Cuban Missile Crisis) shaped 1960s domestic politics by consuming presidential attention and providing both justification and context for civil rights (America's image abroad).",
+    connections:["jfk-civil-rights","vietnam"]},
+  "counterculture": {name:"Counterculture", topic:"Social Movements", mastery:0, exposures:0,
+    explanation:"The broader cultural rebellion of the 1960s including hippies, psychedelic culture, and rejection of mainstream values. Often conflated with the political movements but distinct from them.",
+    connections:["anti-war","student-movement","personal-political"]},
+  "lbj": {name:"LBJ's Dual Legacy", topic:"Great Society", mastery:0, exposures:0,
+    explanation:"Johnson passed the most significant domestic legislation since the New Deal (Civil Rights Act, Voting Rights Act, Medicare, Medicaid) while simultaneously escalating Vietnam, which destroyed his presidency.",
+    connections:["great-society","vietnam","civil-rights-act"]},
+  "latino-activism": {name:"Latino Activism & Cesar Chavez", topic:"Social Movements", mastery:0, exposures:0,
+    explanation:"Latino activism was explicitly linked to labor justice, especially Cesar Chavez and the United Farm Workers' strike efforts. Combined civil rights demands with economic justice.",
+    connections:["civil-rights-act","anti-war","personal-political"]},
+  "aim": {name:"American Indian Movement", topic:"Social Movements", mastery:0, exposures:0,
+    explanation:"AIM (founded 1968) took over Alcatraz to symbolize stolen land. Won greater tribal control over education and economic development and filed suits for restitution.",
+    connections:["civil-rights-act","stonewall","latino-activism"]}
+};
+
+// Question bank: initial + reteach variants
+const questionBank = [
+  // --- INITIAL QUESTIONS (round 1) ---
+  {id:"q1",round:1,conceptId:"sit-ins",difficulty:"medium",topic:"Civil Rights Movement",
+    question:"What was the primary significance of the sit-in movement that began with the Greensboro sit-ins in 1960?",
+    options:[
+      {label:"A",text:"It was the first time African Americans protested segregation",correct:false},
+      {label:"B",text:"It demonstrated that ordinary people, especially students, could effectively challenge segregation through direct nonviolent action",correct:true},
+      {label:"C",text:"It immediately led to the passage of the Civil Rights Act",correct:false},
+      {label:"D",text:"It was organized by Martin Luther King Jr. as part of the SCLC strategy",correct:false}
+    ],
+    explanation:"The sit-ins showed grassroots, student-led direct action could challenge Jim Crow without large organizational infrastructure. This wasn't the first protest against segregation, and the Civil Rights Act didn't pass until 1964.",
+    reteach:"Think of it this way: before the sit-ins, civil rights organizing was largely driven by established groups like the NAACP (legal strategy) and churches (community organizing). The sit-ins proved that four college students with no organizational backing could create a crisis that forced change. The method mattered as much as the message.",
+    connection:"This connects to the student movement more broadly. The same energy that drove the sit-ins later fueled SDS and the anti-war movement. Students discovered they had agency, and that discovery rippled through every social movement of the decade."},
+
+  {id:"q2",round:1,conceptId:"jfk-civil-rights",difficulty:"easy",topic:"JFK Presidency",
+    question:"Why was JFK 'initially cool to civil rights' according to the video?",
+    options:[
+      {label:"A",text:"He was personally opposed to racial equality",correct:false},
+      {label:"B",text:"The Cold War, including the Cuban Missile Crisis and Bay of Pigs, occupied most of his attention",correct:true},
+      {label:"C",text:"He didn't believe the federal government had authority over civil rights",correct:false},
+      {label:"D",text:"He was waiting for the Supreme Court to act first",correct:false}
+    ],
+    explanation:"The Cold War consumed Kennedy's bandwidth. It wasn't opposition to civil rights but competing priorities and political calculation (he needed Southern Democratic votes).",
+    reteach:"Here's the structural insight: JFK sat at the intersection of two massive pressures. Externally, the Cold War created existential urgency (nuclear weapons, Cuba). Internally, the Democratic Party's coalition included both Black voters and white Southern segregationists. Moving on civil rights meant fracturing his own party. The 1963 Birmingham demonstrations made inaction politically impossible.",
+    connection:"This connects directly to LBJ's dual legacy. LBJ had the political skill to pass civil rights legislation but paid the price Kennedy feared: the Democratic Party lost the South for a generation. The Cold War context also explains Vietnam's escalation, since containment theory drove both crises."},
+
+  {id:"q3",round:1,conceptId:"civil-rights-act",difficulty:"easy",topic:"Civil Rights Legislation",
+    question:"Which legislative achievement does the video identify as one of the 'great bright spots in American history'?",
+    options:[
+      {label:"A",text:"The Voting Rights Act of 1965",correct:false},
+      {label:"B",text:"The Equal Pay Act of 1963",correct:false},
+      {label:"C",text:"The Civil Rights Act of 1964",correct:true},
+      {label:"D",text:"The Gulf of Tonkin Resolution",correct:false}
+    ],
+    explanation:"The Civil Rights Act emerged from the demands at the March on Washington. The Voting Rights Act was also crucial but discussed separately. The Gulf of Tonkin was about Vietnam.",
+    reteach:"A useful way to keep these straight: the Civil Rights Act (1964) was about access, specifically ending segregation in public places and discrimination in employment. The Voting Rights Act (1965) was about political power, specifically ensuring Black citizens could actually vote. The Equal Pay Act (1963) was about gender. Each tackled a different dimension of inequality.",
+    connection:"These three acts form a legislative trilogy. The Civil Rights Act created legal equality in public life, the Voting Rights Act created political equality at the ballot box, and the Equal Pay Act began addressing economic equality across gender. Together they represent the legislative high-water mark of the 1960s. But as the Foner quote reveals, legislative equality didn't automatically produce economic equality."},
+
+  {id:"q4",round:1,conceptId:"war-on-poverty",difficulty:"hard",topic:"Great Society",
+    question:"According to the video, what was a fundamental flaw in LBJ's War on Poverty?",
+    options:[
+      {label:"A",text:"It spent too much money on direct cash payments to the poor",correct:false},
+      {label:"B",text:"It treated poverty as a social problem and emphasized training, while failing to account for the economic shift from manufacturing to service jobs",correct:true},
+      {label:"C",text:"It only targeted urban areas and ignored rural poverty",correct:false},
+      {label:"D",text:"It was vetoed by Congress before it could take effect",correct:false}
+    ],
+    explanation:"Johnson treated poverty as a social problem (fix the people via training) rather than economic (fix the structures via jobs or guaranteed income). Meanwhile, deindustrialization was eliminating high-wage union manufacturing jobs.",
+    reteach:"This is a framing problem with massive consequences. Imagine two doctors. One says 'the patient is sick because they have bad habits' (social framing, prescribe training). The other says 'the patient is sick because the water supply is contaminated' (structural framing, prescribe infrastructure change). Johnson chose the first doctor. But the economy was the water supply: it was shifting away from the kind of jobs that had built the middle class, and no amount of training could replace jobs that no longer existed.",
+    connection:"This connects to the Foner legacy quote. The reason urban poverty persisted despite civil rights gains is precisely this mismatch: legal equality advanced while the economic ladder was being pulled up by deindustrialization. The same structural analysis applies today when people debate whether to solve poverty through education/training or through guaranteed income/jobs programs."},
+
+  {id:"q5",round:1,conceptId:"vietnam",difficulty:"easy",topic:"Vietnam War",
+    question:"How many American troops were in Vietnam by 1968?",
+    options:[
+      {label:"A",text:"About 100,000",correct:false},
+      {label:"B",text:"About 250,000",correct:false},
+      {label:"C",text:"Over 500,000",correct:true},
+      {label:"D",text:"About 1 million",correct:false}
+    ],
+    explanation:"By 1968, over 500,000 American troops were in Vietnam, escalated after the Gulf of Tonkin Resolution gave LBJ broad authority.",
+    reteach:"The numbers tell the story of mission creep: JFK had ~16,000 'advisors.' By 1965 under LBJ, combat troops were arriving. By 1968, over 500,000. No single decision said 'let's send half a million soldiers to Southeast Asia.' It happened through a series of incremental escalations, each one seeming reasonable given the last.",
+    connection:"The troop number connects to the anti-war movement's timing. The movement didn't get truly massive until 1967-68, when the draft was pulling in enough people that nearly everyone knew someone at risk. The same 500,000 figure also connects to LBJ's dual legacy: he couldn't fund both the Great Society and the war, so the domestic agenda suffered."},
+
+  {id:"q6",round:1,conceptId:"anti-war",difficulty:"medium",topic:"Vietnam War",
+    question:"The video argues that college students opposed the Vietnam War primarily because:",
+    options:[
+      {label:"A",text:"They were ideologically committed to communism",correct:false},
+      {label:"B",text:"They had studied Vietnamese history and understood it was a civil war",correct:false},
+      {label:"C",text:"They had student deferments and didn't want to go, but really didn't want their friends to go",correct:true},
+      {label:"D",text:"They were following the leadership of Martin Luther King Jr.",correct:false}
+    ],
+    explanation:"Green makes the pointed observation that opposition was driven by personal stakes (deferments protected them, but not their friends) rather than deep ideological commitment.",
+    reteach:"Green is doing something important here historiographically: deflating the romanticized narrative. The popular image is of principled students opposing an unjust war on moral grounds. Green says the simpler truth is more revealing: they didn't want their friends to die. This isn't cynical; it's actually a more honest account of how mass movements form. People mobilize when the threat becomes personal.",
+    connection:"The class dimension here links to the War on Poverty. Working-class men who couldn't get college deferments were disproportionately sent to fight. The same economic stratification that the Great Society failed to fix was deciding who lived and who died in Vietnam."},
+
+  {id:"q7",round:1,conceptId:"stonewall",difficulty:"easy",topic:"Social Movements",
+    question:"What event in June 1969 touched off the modern gay liberation movement?",
+    options:[
+      {label:"A",text:"The March on Washington for gay rights",correct:false},
+      {label:"B",text:"Police raided the Stonewall Inn, and the gay community fought back with sustained demonstrations",correct:true},
+      {label:"C",text:"The Supreme Court struck down anti-sodomy laws",correct:false},
+      {label:"D",text:"Harvey Milk was elected in San Francisco",correct:false}
+    ],
+    explanation:"Police raided the Stonewall Inn; the community fought back with days of demonstrations. Anti-sodomy laws weren't struck down until Lawrence v. Texas (2003). Harvey Milk wasn't elected until 1977.",
+    reteach:"What made Stonewall different from the many previous police raids on gay bars was the response: people fought back and sustained demonstrations for days. The key participants were often the most marginalized: transgender women of color. This pattern, where the most oppressed members of a community catalyze change, recurs throughout the 1960s movements.",
+    connection:"Stonewall connects to the broader 1960s pattern: marginalized groups saw what the civil rights movement accomplished and applied similar organizing principles to their own struggles. The women's movement, Latino activism, AIM, and gay liberation all drew from the same playbook of collective action and visibility."},
+
+  {id:"q8",round:1,conceptId:"feminine-mystique",difficulty:"medium",topic:"Women's Movement",
+    question:"Betty Friedan's The Feminine Mystique (1963) primarily argued that:",
+    options:[
+      {label:"A",text:"Women should focus on entering the workforce immediately",correct:false},
+      {label:"B",text:"Women needed the right to vote to achieve equality",correct:false},
+      {label:"C",text:"The idea that women should find fulfillment solely through homemaking was a form of oppression",correct:true},
+      {label:"D",text:"Women's rights could only be achieved through constitutional amendment",correct:false}
+    ],
+    explanation:"Friedan identified 'the problem that has no name': educated women's unhappiness when confined to domestic roles. Women already had voting rights since 1920 (19th Amendment).",
+    reteach:"Friedan's core insight was about invisible ideology. The 'mystique' was the cultural message that a woman's highest purpose was as wife and mother. She argued this wasn't natural or inevitable but a constructed narrative that served economic and social interests. The power of the book was in naming something millions of women experienced but couldn't articulate.",
+    connection:"This connects directly to 'the personal is political.' Friedan named the private experience; the broader feminist movement then argued that private experiences of inequality are political problems requiring political solutions. The same logic structure, taking personal suffering, identifying its systemic cause, then demanding structural change, is the template every 1960s movement followed."},
+
+  {id:"q9",round:1,conceptId:"loving-v-virginia",difficulty:"medium",topic:"Warren Court",
+    question:"Which Warren Court decision struck down laws banning interracial marriage?",
+    options:[
+      {label:"A",text:"Miranda v. Arizona",correct:false},
+      {label:"B",text:"Griswold v. Connecticut",correct:false},
+      {label:"C",text:"Loving v. Virginia",correct:true},
+      {label:"D",text:"New York Times v. Sullivan",correct:false}
+    ],
+    explanation:"Loving v. Virginia ('the most appropriately named case ever') struck down interracial marriage bans. Miranda = suspects' rights. Griswold = privacy/contraception. NYT v. Sullivan = press freedom.",
+    reteach:"Here's a mnemonic framework for the Warren Court cases: Loving = Love (marriage). Miranda = 'You have the right to remain silent' (police procedure). Griswold = Privacy (contraception, later extended). Sullivan = Press (libel standards for public figures). Each expanded a different domain of individual rights against state power.",
+    connection:"Loving v. Virginia's legal reasoning, that marriage is a fundamental right under the 14th Amendment, became the basis for Obergefell v. Hodges (2015), which legalized same-sex marriage. There's a direct legal DNA line from the Warren Court's 1960s rights revolution to 21st-century civil rights victories."},
+
+  {id:"q10",round:1,conceptId:"personal-political",difficulty:"hard",topic:"Women's Movement",
+    question:"What concept did 1960s feminists introduce that reframed personal experiences as political issues?",
+    options:[
+      {label:"A",text:"'Equal rights under law'",correct:false},
+      {label:"B",text:"'The personal is political'",correct:true},
+      {label:"C",text:"'Separate spheres'",correct:false},
+      {label:"D",text:"'Consciousness raising'",correct:false}
+    ],
+    explanation:"'The personal is political' argued that issues like pay, childcare, and abortion were not private matters but political questions. 'Separate spheres' was the Victorian-era ideology feminists were fighting against. 'Consciousness raising' was a method, not the framing concept itself.",
+    reteach:"This phrase is essentially a systems-thinking framework applied to social justice. Before this framing, if a woman was unhappy in her role, that was her personal problem. After this framing, her unhappiness was evidence of a structural problem affecting millions. The move from 'my problem' to 'our political condition' is the conceptual engine that powers every liberation movement.",
+    connection:"This framing connects every movement of the 1960s. Civil rights: individual experiences of racism are political. Anti-war: the draft affecting your community is political. Gay liberation: who you love is political. Latino and Native American activism: your cultural heritage and labor conditions are political. The 1960s essentially taught America that there is no such thing as a purely private sphere."},
+
+  {id:"q11",round:1,conceptId:"foner-legacy",difficulty:"hard",topic:"Legacy of the 1960s",
+    question:"According to Eric Foner, what was a lasting unsolved problem despite the 1960s gains?",
+    options:[
+      {label:"A",text:"Racial segregation in public schools",correct:false},
+      {label:"B",text:"Urban poverty, even as the white-Black gap in education and income narrowed",correct:true},
+      {label:"C",text:"The lack of voting rights for African Americans",correct:false},
+      {label:"D",text:"The absence of any civil rights legislation",correct:false}
+    ],
+    explanation:"Foner notes the education/income/employment gap narrowed considerably, but deindustrialization and urban decay persisted. Suburbs remained largely off-limits to non-white people. The median wealth gap remained.",
+    reteach:"The key insight is the difference between legal/political equality and economic equality. The 1960s delivered the first two: you can vote, eat at any restaurant, go to any school. But the third, having equal economic footing, depends on structural factors like wealth inheritance, neighborhood access, and what kind of jobs the economy creates. These proved far more resistant to legislation.",
+    connection:"This connects back to the War on Poverty's flaw. If poverty is structural (deindustrialization, suburban exclusion) rather than social (lack of training), then training programs can't solve it. The Foner quote is essentially the empirical proof that Johnson chose the wrong framing."},
+
+  {id:"q12",round:1,conceptId:"continuity-thesis",difficulty:"hard",topic:"Historical Interpretation",
+    question:"The video's central thesis about the 1960s is that the decade's changes were:",
+    options:[
+      {label:"A",text:"A sudden revolution caused by the baby boomer generation",correct:false},
+      {label:"B",text:"Primarily the result of a few charismatic leaders",correct:false},
+      {label:"C",text:"The result of a long process going on for decades, arguably hundreds of years",correct:true},
+      {label:"D",text:"Largely superficial and didn't produce lasting change",correct:false}
+    ],
+    explanation:"Green explicitly rejects the 'revolutionary 60s' narrative. His final point: these changes resulted from processes going on for decades or centuries. The 1960s were an acceleration point, not a genesis.",
+    reteach:"Think of it like a river reaching a waterfall. The water has been flowing for miles, but the dramatic drop happens at one point. The 1960s are the waterfall. The NAACP's legal strategy (1930s-50s), the labor movement's infrastructure, the ideological groundwork of abolitionism and suffrage: all of these were the river flowing long before the visible drama of the 1960s.",
+    connection:"This interpretive lens matters for understanding the present. If the 1960s were a sudden revolution, you might expect sudden revolutions to solve today's problems. If they were the culmination of long processes, then today's movements (BLM, climate activism, etc.) should be understood as ongoing processes that will produce their own acceleration points, likely when we least expect it."},
+
+  // --- RETEACH QUESTIONS (round 2, for missed concepts) ---
+  {id:"q1r",round:2,conceptId:"sit-ins",difficulty:"easy",topic:"Civil Rights Movement",
+    question:"The Greensboro sit-ins were significant primarily because they showed that change could be driven by:",
+    options:[
+      {label:"A",text:"Supreme Court rulings",correct:false},
+      {label:"B",text:"Presidential executive orders",correct:false},
+      {label:"C",text:"Ordinary students without organizational backing",correct:true},
+      {label:"D",text:"International pressure from other countries",correct:false}
+    ],
+    explanation:"The sit-ins demonstrated that four college students with no large organization behind them could create a crisis that forced institutions to change. This was grassroots power in its purest form.",
+    reteach:"The before/after is clarifying. Before sit-ins: civil rights progress came mainly through courts (NAACP lawyers) and churches (organized community). After sit-ins: anyone with courage and a lunch counter could participate. The barrier to entry for activism dropped dramatically.",
+    connection:"This democratization of activism echoes forward into every subsequent movement. Social media activism today follows the same logic: lowering the barrier to participation in collective action."},
+
+  {id:"q2r",round:2,conceptId:"jfk-civil-rights",difficulty:"easy",topic:"JFK Presidency",
+    question:"JFK delayed action on civil rights primarily because of competing pressures from:",
+    options:[
+      {label:"A",text:"The Cold War abroad and the need for Southern Democratic votes at home",correct:true},
+      {label:"B",text:"His personal belief that civil rights weren't important",correct:false},
+      {label:"C",text:"The Supreme Court blocking any presidential action",correct:false},
+      {label:"D",text:"Lack of public support for civil rights",correct:false}
+    ],
+    explanation:"Two simultaneous pressures: externally, the Cold War demanded attention. Internally, his party coalition included both Black voters and Southern segregationists. He couldn't satisfy both without risk.",
+    reteach:"Political leaders rarely have the luxury of single-issue focus. JFK's situation is a case study in competing priorities: a nuclear standoff with the USSR, a party coalition held together with contradictory promises, and a moral crisis he could see but couldn't afford to prioritize. The 1963 demonstrations changed the political math by making inaction MORE costly than action.",
+    connection:"This same dynamic, where external crisis competes with domestic justice, recurs throughout American history. It's present in Lincoln's approach to abolition during the Civil War and in the tension between climate policy and economic concerns today."},
+
+  {id:"q3r",round:2,conceptId:"civil-rights-act",difficulty:"easy",topic:"Civil Rights Legislation",
+    question:"The Civil Rights Act of 1964 primarily addressed inequality by:",
+    options:[
+      {label:"A",text:"Giving Black Americans the right to vote",correct:false},
+      {label:"B",text:"Banning discrimination in public places and employment",correct:true},
+      {label:"C",text:"Establishing affirmative action quotas",correct:false},
+      {label:"D",text:"Creating new federal courts for civil rights cases",correct:false}
+    ],
+    explanation:"The CRA banned discrimination in public accommodations (hotels, restaurants) and employment. Voting rights came separately in the VRA of 1965. It did not establish quotas.",
+    reteach:"Think of the CRA as answering the question 'can I go there and can I work there?' The VRA answered 'can I vote?' The Equal Pay Act answered 'do I get paid the same?' Each law targeted a different domain where inequality operated.",
+    connection:"The legal strategy behind the CRA is fascinating: it was built on the commerce clause rather than equal protection. Congress argued that segregated businesses affected interstate commerce. This workaround tells you the 14th Amendment alone wasn't being interpreted broadly enough to support civil rights legislation at the time."},
+
+  {id:"q4r",round:2,conceptId:"war-on-poverty",difficulty:"medium",topic:"Great Society",
+    question:"The War on Poverty's emphasis on training programs failed because:",
+    options:[
+      {label:"A",text:"Nobody enrolled in the programs",correct:false},
+      {label:"B",text:"The economy was shifting from high-wage manufacturing to low-wage services, so trained workers had fewer good jobs to fill",correct:true},
+      {label:"C",text:"Congress cut all funding within the first year",correct:false},
+      {label:"D",text:"The programs only existed in theory and were never implemented",correct:false}
+    ],
+    explanation:"Training people for jobs that were disappearing was the core structural mismatch. Deindustrialization was eliminating exactly the kind of jobs that training should have led to.",
+    reteach:"Imagine training someone to be an excellent telegraph operator in 1920. The training might be perfect, but the industry is dying. That's the War on Poverty's flaw at scale: the manufacturing economy that had created middle-class prosperity was being replaced by a service economy with lower wages and fewer unions.",
+    connection:"This is the same dynamic Foner describes in his assessment of the 1960s legacy. Legislative equality (Civil Rights Act) opened doors, but economic restructuring (deindustrialization) was simultaneously removing the wealth behind those doors."},
+
+  {id:"q5r",round:2,conceptId:"vietnam",difficulty:"easy",topic:"Vietnam War",
+    question:"The massive escalation from 16,000 advisors to over 500,000 combat troops in Vietnam is an example of:",
+    options:[
+      {label:"A",text:"A formal congressional declaration of war",correct:false},
+      {label:"B",text:"Mission creep through incremental decisions, none of which were a formal war declaration",correct:true},
+      {label:"C",text:"A single decisive presidential order to invade",correct:false},
+      {label:"D",text:"Troops voluntarily choosing to deploy",correct:false}
+    ],
+    explanation:"No single decision said 'send half a million soldiers.' Each escalation seemed reasonable given the previous one. The Gulf of Tonkin Resolution provided legal cover but wasn't a war declaration.",
+    reteach:"Mission creep is when each small step seems logical but the cumulative result is something nobody originally intended. Step 1: send advisors. Step 2: advisors need protection, send guards. Step 3: guards are under fire, send combat units. Step 4: combat units need more support... Each step makes sense in isolation. The pattern is the trap.",
+    connection:"This pattern of incremental escalation without clear decision points recurs in many contexts: organizational scope creep, technology addiction, even personal debt. Recognizing the pattern is one of the most transferable lessons from studying Vietnam."},
+
+  {id:"q6r",round:2,conceptId:"anti-war",difficulty:"easy",topic:"Vietnam War",
+    question:"The student deferment system during Vietnam created a major divide between:",
+    options:[
+      {label:"A",text:"Democrats and Republicans",correct:false},
+      {label:"B",text:"The military and civilian leadership",correct:false},
+      {label:"C",text:"College-educated (protected) and working-class (drafted) Americans",correct:true},
+      {label:"D",text:"Northern and Southern states",correct:false}
+    ],
+    explanation:"Students in college were deferred from the draft, meaning working-class and minority men who couldn't afford college were disproportionately sent to fight.",
+    reteach:"The class dimension is the hidden story of the anti-war movement. Campus protesters were, by definition, people the draft system had already protected. The people actually dying in Vietnam were disproportionately those without access to college. This is why Green's observation about self-interest is important, not cynical: it reveals the structural inequality embedded in the war itself.",
+    connection:"This connects to the War on Poverty discussion. The same economic stratification that Johnson's programs failed to address was literally deciding who fought and died in his war. Economic inequality wasn't just an abstract policy failure; it had life-and-death consequences."},
+
+  {id:"q7r",round:2,conceptId:"stonewall",difficulty:"easy",topic:"Social Movements",
+    question:"What made the Stonewall uprising (1969) different from previous police raids on gay bars?",
+    options:[
+      {label:"A",text:"It was the first time police ever raided a gay bar",correct:false},
+      {label:"B",text:"The community fought back and sustained demonstrations for multiple days",correct:true},
+      {label:"C",text:"It was broadcast live on national television",correct:false},
+      {label:"D",text:"It was organized by established civil rights leaders",correct:false}
+    ],
+    explanation:"Police raids on gay bars were routine. What was unprecedented was the sustained resistance: the community fought back for days. The uprising was spontaneous, not organized by established leaders.",
+    reteach:"Stonewall follows a pattern visible across the 1960s: a routine act of oppression meets an unexpected response, and that response catalyzes a movement. The Birmingham church bombing, the Selma bridge, the Stonewall raid, in each case the oppressive act was nothing new, but the response transformed it into a turning point.",
+    connection:"The pattern of 'routine oppression meets unprecedented resistance' is the mechanism by which long-running processes (Green's continuity thesis) produce sudden visible change. The conditions build invisibly until a single event crystallizes them into a movement."},
+
+  {id:"q8r",round:2,conceptId:"feminine-mystique",difficulty:"easy",topic:"Women's Movement",
+    question:"Friedan's The Feminine Mystique was powerful because it:",
+    options:[
+      {label:"A",text:"Proposed specific legislation for women's rights",correct:false},
+      {label:"B",text:"Named a widespread experience that millions of women felt but couldn't articulate",correct:true},
+      {label:"C",text:"Was the first book ever written about women's rights",correct:false},
+      {label:"D",text:"Was endorsed by the president",correct:false}
+    ],
+    explanation:"Friedan identified 'the problem that has no name': the widespread unhappiness of educated women confined to domestic roles. The power was in giving language to a shared but unnamed experience.",
+    reteach:"There's a concept in psychology: once you can name something, you can see it, discuss it, and organize against it. Before The Feminine Mystique, a woman unhappy in her domestic role might think 'something is wrong with me.' After it, she could think 'something is wrong with the system.' That shift from self-blame to system-critique is the foundational move of consciousness raising.",
+    connection:"This naming-as-power dynamic is identical to what 'the personal is political' formalized. Both are about making visible what ideology keeps invisible. The same dynamic appears in modern conversations about systemic racism, where naming structural patterns transforms individual experiences into collective understanding."},
+
+  {id:"q9r",round:2,conceptId:"loving-v-virginia",difficulty:"easy",topic:"Warren Court",
+    question:"Loving v. Virginia (1967) established that marriage is a _____ under the 14th Amendment:",
+    options:[
+      {label:"A",text:"State privilege that can be regulated",correct:false},
+      {label:"B",text:"Religious institution beyond government reach",correct:false},
+      {label:"C",text:"Fundamental right",correct:true},
+      {label:"D",text:"Social contract between families",correct:false}
+    ],
+    explanation:"The ruling declared marriage a fundamental right protected by the Constitution. This legal precedent was later used to support same-sex marriage in Obergefell v. Hodges (2015).",
+    reteach:"The legal weight of 'fundamental right' is enormous. Once something is classified as a fundamental right, the government needs a 'compelling interest' to restrict it, not just a 'reasonable basis.' By classifying marriage this way, the Warren Court set a legal standard that eventually made it very difficult to justify excluding any group from marriage.",
+    connection:"Legal precedents work like dominoes. Loving established marriage as a fundamental right. Decades later, Obergefell asked: if marriage is fundamental, on what basis can you deny it to same-sex couples? The answer, logically, was: you can't. The 1960s Warren Court decisions planted legal seeds that bloomed for 50 years."},
+
+  {id:"q10r",round:2,conceptId:"personal-political",difficulty:"medium",topic:"Women's Movement",
+    question:"'The personal is political' fundamentally changed activism by arguing that:",
+    options:[
+      {label:"A",text:"Politicians should share more personal stories",correct:false},
+      {label:"B",text:"Individual suffering from inequality is not a personal problem but evidence of a structural system requiring political solutions",correct:true},
+      {label:"C",text:"Personal relationships should be governed by laws",correct:false},
+      {label:"D",text:"Political activists must sacrifice their personal lives",correct:false}
+    ],
+    explanation:"This phrase reframed individual experiences of inequality as evidence of systemic problems. Your personal struggle with pay or childcare isn't your fault; it's a political condition affecting millions.",
+    reteach:"Here's the logical structure: Premise 1: millions of women independently experience the same problems (unequal pay, no childcare, limited autonomy). Premise 2: when millions of people independently have the same 'personal' problem, it's not personal but structural. Conclusion: structural problems require political solutions, not individual coping strategies. This is essentially the scientific method applied to social justice.",
+    connection:"Every 1960s movement used this same logical structure. Civil rights: millions of Black Americans experience the same barriers? That's political. Anti-war: millions of families fear the draft? Political. Gay liberation: millions hide their identity? Political. The phrase is the universal operating system of 1960s activism."},
+
+  {id:"q11r",round:2,conceptId:"foner-legacy",difficulty:"medium",topic:"Legacy of the 1960s",
+    question:"The 1960s legislative victories (Civil Rights Act, Voting Rights Act) couldn't solve urban poverty because:",
+    options:[
+      {label:"A",text:"The laws were struck down by the Supreme Court",correct:false},
+      {label:"B",text:"Legal equality doesn't automatically produce economic equality, especially during deindustrialization",correct:true},
+      {label:"C",text:"Nobody enforced the laws",correct:false},
+      {label:"D",text:"The laws only applied to Southern states",correct:false}
+    ],
+    explanation:"Opening doors legally (you can work here, eat here, vote here) doesn't create economic wealth. Meanwhile, deindustrialization was destroying the manufacturing jobs that had built middle-class wealth, and suburbs remained largely closed to non-white families.",
+    reteach:"Think of three layers of inequality: legal (can you do X?), political (can you vote?), and economic (do you have wealth?). The 1960s legislation attacked the first two effectively. But economic inequality has deeper roots: inherited wealth, housing patterns, what the economy produces. You can't legislate someone into having a family home or a factory job that no longer exists.",
+    connection:"This three-layer model (legal, political, economic) helps explain why progress often feels incomplete. Each layer requires different tools. Laws fix legal inequality. Voting rights fix political inequality. Economic inequality requires structural economic change, which is harder and slower than passing laws."},
+
+  {id:"q12r",round:2,conceptId:"continuity-thesis",difficulty:"medium",topic:"Historical Interpretation",
+    question:"Viewing the 1960s as 'continuity rather than revolution' means recognizing that:",
+    options:[
+      {label:"A",text:"Nothing actually changed in the 1960s",correct:false},
+      {label:"B",text:"The changes were built on decades of groundwork (NAACP legal strategy, labor organizing, earlier movements) rather than appearing from nowhere",correct:true},
+      {label:"C",text:"The baby boomers deserve all the credit",correct:false},
+      {label:"D",text:"Revolution is always impossible",correct:false}
+    ],
+    explanation:"Green's point isn't that nothing happened, but that the dramatic changes of the 1960s were the visible result of invisible processes: the NAACP's legal strategy since the 1930s, labor organizing, the slow accumulation of moral arguments over centuries.",
+    reteach:"Consider Rosa Parks. The popular story: a tired woman spontaneously refused to give up her seat. The historical reality: Parks was a trained activist, the NAACP had been looking for a test case, and the Montgomery bus boycott was organized by a pre-existing network. The 'spontaneous' moment was the visible tip of years of strategic preparation. That's the continuity thesis in miniature.",
+    connection:"This lens is a powerful thinking tool beyond history. Any 'overnight success' in business, science, or culture is usually the visible result of invisible preparation. Understanding the 1960s this way immunizes you against the myth that change happens through dramatic moments rather than sustained, boring, invisible work."}
+];
+
+// ===================== STATE =====================
+let state = {
+  mode: 'quiz',
+  currentQuestion: 0,
+  answers: {},
+  round: 1,
+  showingFeedback: false,
+  quizComplete: false,
+  missedConcepts: [],
+  flashcardIndex: 0,
+  flashcardFlipped: false,
+  xp: 0,
+  streak: 0,
+  level: 1,
+  selectedMapConcept: null,
+};
+
+function getQuestions() {
+  return questionBank.filter(q => q.round === state.round);
+}
+
+function xpForLevel(lvl) { return lvl * 100; }
+function addXP(amount) {
+  state.xp += amount;
+  while (state.xp >= xpForLevel(state.level)) {
+    state.xp -= xpForLevel(state.level);
+    state.level++;
+  }
+  showXPPop('+' + amount + ' XP');
+}
+
+function showXPPop(text) {
+  const pop = document.createElement('div');
+  pop.className = 'xp-pop';
+  pop.textContent = text;
+  document.body.appendChild(pop);
+  setTimeout(() => pop.remove(), 1100);
+}
+
+// ===================== RENDER =====================
+function render() {
+  // Top bar stats
+  document.getElementById('streakBadge').innerHTML = '&#128293; ' + state.streak;
+  document.getElementById('xpDisplay').textContent = state.xp;
+  document.getElementById('levelDisplay').textContent = state.level;
+  document.getElementById('xpLabelLeft').textContent = 'Level ' + state.level;
+  document.getElementById('xpLabelRight').textContent = state.xp + ' / ' + xpForLevel(state.level) + ' XP';
+  document.getElementById('xpBar').style.width = (state.xp / xpForLevel(state.level) * 100) + '%';
+
+  // Tabs
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab')[['quiz','flashcards','map','review'].indexOf(state.mode)].classList.add('active');
+
+  // Modes
+  document.querySelectorAll('.mode').forEach(m => m.classList.remove('active'));
+  document.getElementById('mode-' + state.mode).classList.add('active');
+
+  if (state.mode === 'quiz') renderQuiz();
+  else if (state.mode === 'flashcards') renderFlashcards();
+  else if (state.mode === 'map') renderMap();
+  else if (state.mode === 'review') renderReview();
+}
+
+function renderQuiz() {
+  const container = document.getElementById('mode-quiz');
+  const qs = getQuestions();
+
+  if (state.quizComplete) {
+    renderQuizComplete(container, qs);
+    return;
+  }
+
+  const qi = state.currentQuestion;
+  if (qi >= qs.length) { state.quizComplete = true; render(); return; }
+  const q = qs[qi];
+  const answered = state.answers[q.id] !== undefined;
+  const selected = state.answers[q.id];
+  const correctOpt = q.options.find(o => o.correct);
+  const isCorrect = selected === correctOpt?.label;
+
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <span style="font-size:13px;color:var(--muted)">Question ${qi+1} of ${qs.length}${state.round > 1 ? ' (Follow-up Round)' : ''}</span>
+      <span style="font-size:13px;color:var(--muted)">${Object.keys(state.answers).length} answered</span>
+    </div>
+    <div class="progress" style="margin-bottom:24px"><div class="progress-fill" style="width:${((qi+1)/qs.length)*100}%"></div></div>
+    <div class="card slide-in">
+      <div class="q-header">
+        <span class="q-num">Question ${qi+1} <span class="q-diff ${q.difficulty}">${q.difficulty}</span></span>
+      </div>
+      <div class="q-topic">${q.topic}</div>
+      <div class="q-text">${q.question}</div>
+      ${q.options.map(o => `
+        <button class="option ${answered?(o.correct?'correct locked':(selected===o.label?'incorrect locked':'locked')):(selected===o.label?'selected':'')}"
+          onclick="selectAnswer('${q.id}','${o.label}')" ${answered?'disabled':''}>
+          <span class="badge">${o.label}</span>${o.text}
+        </button>
+      `).join('')}
+
+      <div class="feedback ${answered?'show':''} ${answered?(isCorrect?'correct-fb':'incorrect-fb'):''}">
+        <div class="fb-header ${isCorrect?'correct-h':'incorrect-h'}">${isCorrect?'Correct! +15 XP':'Not quite. Let\'s learn this.'}</div>
+        <div class="fb-explain">${q.explanation}</div>
+        ${!isCorrect && q.reteach ? `<div class="fb-reteach"><strong>Let me explain it differently:</strong><br>${q.reteach}</div>` : ''}
+        ${q.connection ? `<div class="fb-connection"><strong>How this connects:</strong><br>${q.connection}</div>` : ''}
+        <div class="fb-deeper"><strong>Going deeper:</strong> ${concepts[q.conceptId]?.explanation || ''}</div>
+        <div style="margin-top:16px;text-align:right">
+          <button class="btn btn-primary btn-sm next-btn" onclick="nextQuestion()">
+            ${qi + 1 < qs.length ? 'Next Question →' : 'See Results'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderQuizComplete(container, qs) {
+  const correct = qs.filter(q => {
+    const sel = state.answers[q.id];
+    return sel === q.options.find(o => o.correct).label;
+  }).length;
+  const score = Math.round((correct / qs.length) * 100);
+  const scoreClass = score >= 85 ? 'great' : score >= 60 ? 'okay' : 'poor';
+
+  // Find missed concepts for this round
+  const missed = qs.filter(q => {
+    const sel = state.answers[q.id];
+    return sel !== q.options.find(o => o.correct).label;
+  }).map(q => q.conceptId);
+  const uniqueMissed = [...new Set(missed)];
+
+  // Check if reteach questions exist for missed concepts
+  const hasReteach = state.round === 1 && uniqueMissed.length > 0 &&
+    questionBank.some(q => q.round === 2 && uniqueMissed.includes(q.conceptId));
+
+  container.innerHTML = `
+    <div class="score-screen slide-in">
+      <div class="score-big ${scoreClass}">${score}%</div>
+      <div class="score-sub">${correct} of ${qs.length} correct</div>
+      <div class="xp-earned">+${correct * 15} XP earned this round</div>
+      ${state.round === 1 && score >= 85 ? '<p style="color:var(--green);margin-top:12px">Strong performance! Concepts have been added to your flashcard deck for spaced review.</p>' : ''}
+    </div>
+    ${uniqueMissed.length ? `
+      <div class="card">
+        <h3 style="font-size:15px;margin-bottom:12px;color:var(--muted)">Concepts to strengthen:</h3>
+        <div>${uniqueMissed.map(c => `<span class="concept-node weak">${concepts[c]?.name || c}</span>`).join('')}</div>
+      </div>
+    ` : ''}
+    <div style="text-align:center;padding:20px 0;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+      ${hasReteach ? `<button class="btn btn-primary" onclick="startReteach()">Take Follow-Up Quiz (targets weak areas)</button>` : ''}
+      <button class="btn btn-ghost" onclick="switchMode('flashcards')">Practice with Flashcards</button>
+      <button class="btn btn-ghost" onclick="switchMode('map')">View Concept Map</button>
+    </div>
+  `;
+}
+
+function renderFlashcards() {
+  const container = document.getElementById('mode-flashcards');
+  const conceptKeys = Object.keys(concepts);
+  const idx = state.flashcardIndex % conceptKeys.length;
+  const key = conceptKeys[idx];
+  const c = concepts[key];
+  const connected = c.connections.map(k => concepts[k]?.name).filter(Boolean).join(', ');
+
+  container.innerHTML = `
+    <div style="text-align:center;margin-bottom:16px">
+      <span style="font-size:13px;color:var(--muted)">${idx + 1} of ${conceptKeys.length} concepts</span>
+      <span class="concept-node ${c.mastery>=3?'mastered':c.mastery>=1?'learning':'unseen'}" style="margin-left:12px">${c.mastery>=3?'Mastered':c.mastery>=1?'Learning':'New'}</span>
+    </div>
+    <div class="flashcard ${state.flashcardFlipped?'flipped':''}" onclick="flipCard()">
+      <div class="flashcard-inner">
+        <div class="flashcard-face flashcard-front">
+          <div class="q-topic">${c.topic}</div>
+          <div class="q-text">${c.name}</div>
+          <div class="flashcard-hint">Tap to reveal</div>
+        </div>
+        <div class="flashcard-face flashcard-back">
+          <div class="answer">${c.explanation}</div>
+          ${connected ? `<div style="margin-top:12px;font-size:12px;color:var(--muted)">Connects to: ${connected}</div>` : ''}
+        </div>
+      </div>
+    </div>
+    ${state.flashcardFlipped ? `
+      <div class="flashcard-btns slide-in">
+        <span style="font-size:13px;color:var(--muted);padding:10px">How well did you know this?</span>
+        <button class="fc-btn hard" onclick="rateFlashcard(1)">Didn't know</button>
+        <button class="fc-btn okay" onclick="rateFlashcard(3)">Sort of</button>
+        <button class="fc-btn easy" onclick="rateFlashcard(5)">Knew it</button>
+      </div>
+    ` : ''}
+  `;
+}
+
+function renderMap() {
+  const container = document.getElementById('mode-map');
+  const topics = {};
+  Object.entries(concepts).forEach(([k, c]) => {
+    if (!topics[c.topic]) topics[c.topic] = [];
+    topics[c.topic].push({key: k, ...c});
+  });
+
+  let html = '<div class="card"><h2 style="font-size:18px;margin-bottom:16px">Concept Map: The 1960s</h2>';
+  html += '<p style="font-size:13px;color:var(--muted);margin-bottom:20px">Click any concept to see its connections and explanation. Colors show your mastery level.</p>';
+
+  Object.entries(topics).forEach(([topic, items]) => {
+    html += `<div style="margin-bottom:16px"><div style="font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">${topic}</div>`;
+    items.forEach(item => {
+      const cls = item.mastery >= 3 ? 'mastered' : item.mastery >= 1 ? 'learning' : item.exposures > 0 ? 'weak' : 'unseen';
+      html += `<span class="concept-node ${cls}" onclick="selectMapConcept('${item.key}')">${item.name}</span>`;
+    });
+    html += '</div>';
+  });
+
+  if (state.selectedMapConcept && concepts[state.selectedMapConcept]) {
+    const c = concepts[state.selectedMapConcept];
+    const connNames = c.connections.map(k => {
+      const target = concepts[k];
+      if (!target) return null;
+      const cls = target.mastery >= 3 ? 'mastered' : target.mastery >= 1 ? 'learning' : 'unseen';
+      return `<span class="concept-node ${cls}" onclick="selectMapConcept('${k}')" style="font-size:12px">${target.name}</span>`;
+    }).filter(Boolean).join(' ');
+
+    html += `
+      <div class="map-detail slide-in">
+        <h3 style="font-size:16px;margin-bottom:8px;color:var(--accent)">${c.name}</h3>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${c.topic} · Mastery: ${c.mastery >= 3 ? 'Strong' : c.mastery >= 1 ? 'Learning' : 'Needs work'}</div>
+        <p style="font-size:14px;margin-bottom:12px">${c.explanation}</p>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Connected concepts:</div>
+        <div>${connNames}</div>
+      </div>
+    `;
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderReview() {
+  const container = document.getElementById('mode-review');
+  const qs = questionBank.filter(q => state.answers[q.id] !== undefined);
+  const correct = qs.filter(q => state.answers[q.id] === q.options.find(o => o.correct).label).length;
+
+  let html = `
+    <div class="card">
+      <h2 style="font-size:18px;margin-bottom:8px">Session Review</h2>
+      <p style="color:var(--muted);font-size:14px;margin-bottom:16px">${qs.length} questions answered · ${correct} correct · ${state.xp} XP total</p>
+    </div>
+  `;
+
+  qs.forEach(q => {
+    const sel = state.answers[q.id];
+    const correctOpt = q.options.find(o => o.correct);
+    const isCorrect = sel === correctOpt.label;
+    html += `
+      <div class="card" style="border-left:3px solid ${isCorrect?'var(--green)':'var(--red)'}">
+        <div class="q-num" style="margin-bottom:4px">${isCorrect?'CORRECT':'MISSED'} · ${q.topic}</div>
+        <div style="font-size:14px;font-weight:500;margin-bottom:8px">${q.question}</div>
+        ${!isCorrect ? `<p style="font-size:13px;margin-bottom:4px"><span style="color:var(--red)">You chose: ${sel}</span> · <span style="color:var(--green)">Correct: ${correctOpt.label}) ${correctOpt.text}</span></p>` : ''}
+        <div style="font-size:13px;color:var(--muted);line-height:1.6">${q.explanation}</div>
+      </div>
+    `;
+  });
+  container.innerHTML = html;
+}
+
+// ===================== ACTIONS =====================
+function switchMode(mode) {
+  state.mode = mode;
+  render();
+}
+
+function selectAnswer(qid, label) {
+  if (state.answers[qid] !== undefined) return;
+  state.answers[qid] = label;
+  const q = questionBank.find(q => q.id === qid);
+  const isCorrect = label === q.options.find(o => o.correct).label;
+
+  // Update concept mastery
+  if (concepts[q.conceptId]) {
+    concepts[q.conceptId].exposures++;
+    if (isCorrect) {
+      concepts[q.conceptId].mastery = Math.min(5, concepts[q.conceptId].mastery + 1);
+      addXP(15);
+      state.streak++;
+    } else {
+      concepts[q.conceptId].mastery = Math.max(0, concepts[q.conceptId].mastery - 1);
+      state.streak = 0;
+    }
+  }
+  state.showingFeedback = true;
+  render();
+}
+
+function nextQuestion() {
+  state.currentQuestion++;
+  state.showingFeedback = false;
+  render();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function startReteach() {
+  // Find which concepts were missed in round 1
+  const round1Qs = questionBank.filter(q => q.round === 1);
+  const missed = round1Qs.filter(q => {
+    const sel = state.answers[q.id];
+    return sel !== q.options.find(o => o.correct).label;
+  }).map(q => q.conceptId);
+
+  // Filter round 2 questions to only missed concepts
+  state.round = 2;
+  state.currentQuestion = 0;
+  state.quizComplete = false;
+  // We'll show all round 2 questions that match missed concepts
+  // Temporarily filter questionBank for rendering
+  const uniqueMissed = [...new Set(missed)];
+  state.missedConcepts = uniqueMissed;
+  render();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function flipCard() {
+  state.flashcardFlipped = !state.flashcardFlipped;
+  render();
+}
+
+function rateFlashcard(quality) {
+  const keys = Object.keys(concepts);
+  const key = keys[state.flashcardIndex % keys.length];
+  if (quality >= 4) {
+    concepts[key].mastery = Math.min(5, concepts[key].mastery + 1);
+    addXP(5);
+    state.streak++;
+  } else if (quality <= 2) {
+    concepts[key].mastery = Math.max(0, concepts[key].mastery - 0.5);
+    state.streak = 0;
+  }
+  state.flashcardIndex++;
+  state.flashcardFlipped = false;
+  render();
+}
+
+function selectMapConcept(key) {
+  state.selectedMapConcept = state.selectedMapConcept === key ? null : key;
+  render();
+}
+
+// Override getQuestions to filter for reteach
+const _origGetQuestions = getQuestions;
+// Actually let's just override it properly
+function getQuestions() {
+  if (state.round === 2 && state.missedConcepts.length) {
+    return questionBank.filter(q => q.round === 2 && state.missedConcepts.includes(q.conceptId));
+  }
+  return questionBank.filter(q => q.round === state.round);
+}
+
+// ===================== INIT =====================
+render();
+</script>
+</body>
+</html>

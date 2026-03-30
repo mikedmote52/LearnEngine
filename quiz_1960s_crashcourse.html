@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quiz: The 1960s in America</title>
+<style>
+:root{--bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a25;--border:#2a2a3a;--text:#e0e0e8;--muted:#8888a0;--accent:#6366f1;--glow:rgba(99,102,241,.15);--green:#22c55e;--red:#ef4444;--yellow:#eab308;--radius:12px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;min-height:100vh}
+.app{max-width:800px;margin:0 auto;padding:24px}
+.header{padding:20px 0 24px;border-bottom:1px solid var(--border);margin-bottom:32px}
+.header h1{font-size:22px;font-weight:700;letter-spacing:-.5px}
+.header h1 span{color:var(--accent)}
+.header p{color:var(--muted);font-size:14px;margin-top:6px}
+.progress{width:100%;height:6px;background:var(--surface2);border-radius:3px;margin-bottom:32px;overflow:hidden}
+.progress-fill{height:100%;background:var(--accent);border-radius:3px;transition:width .4s}
+.q-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:20px;transition:border-color .3s}
+.q-card.correct-card{border-color:var(--green)}
+.q-card.incorrect-card{border-color:var(--red)}
+.q-num{font-size:11px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px}
+.q-diff{font-size:11px;padding:2px 8px;border-radius:4px;margin-left:8px;font-weight:600}
+.q-diff.easy{background:rgba(34,197,94,.12);color:var(--green)}
+.q-diff.medium{background:rgba(234,179,8,.12);color:var(--yellow)}
+.q-diff.hard{background:rgba(239,68,68,.12);color:var(--red)}
+.q-text{font-size:16px;font-weight:500;margin-bottom:18px;line-height:1.6}
+.option{display:block;width:100%;text-align:left;padding:12px 16px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;margin-bottom:8px;font-size:14px;transition:all .15s;font-family:inherit;line-height:1.5}
+.option:hover:not(.locked){border-color:var(--accent);background:var(--glow)}
+.option.selected{border-color:var(--accent);background:var(--glow)}
+.option.correct{border-color:var(--green);background:rgba(34,197,94,.08)}
+.option.incorrect{border-color:var(--red);background:rgba(239,68,68,.08)}
+.option.locked{cursor:default}
+.badge{display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:50%;background:var(--surface2);font-weight:700;font-size:12px;margin-right:10px;flex-shrink:0}
+.explanation{margin-top:16px;padding:16px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:14px;line-height:1.7;display:none}
+.explanation.show{display:block}
+.deeper{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);color:var(--accent);font-style:italic}
+.submit-area{text-align:center;padding:32px 0}
+.btn{padding:14px 32px;border:none;border-radius:8px;cursor:pointer;font-size:16px;font-weight:700;transition:all .2s;font-family:inherit}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#5558e6}
+.btn-primary:disabled{opacity:.4;cursor:not-allowed}
+.btn-secondary{background:var(--surface2);color:var(--text);border:1px solid var(--border);margin-left:12px}
+.score-display{text-align:center;padding:40px 0}
+.score-big{font-size:72px;font-weight:800}
+.score-big.great{color:var(--green)}
+.score-big.okay{color:var(--yellow)}
+.score-big.needs-work{color:var(--red)}
+.score-sub{font-size:18px;margin-top:8px;color:var(--muted)}
+.fact-section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-top:32px}
+.fact-section h2{font-size:18px;margin-bottom:16px}
+.fact-item{padding:10px 12px;border-radius:8px;margin-bottom:8px;font-size:14px;border-left:3px solid}
+.fact-accurate{border-color:var(--green);background:rgba(34,197,94,.04)}
+.fact-partial{border-color:var(--yellow);background:rgba(234,179,8,.04)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="header">
+<h1><span>Learn</span>Engine Quiz</h1>
+<p>The 1960s in America: Crash Course US History #40 &middot; 12 questions</p>
+</div>
+<div class="progress"><div class="progress-fill" id="progressBar" style="width:0%"></div></div>
+<div id="quizContainer"></div>
+<div class="submit-area" id="submitArea">
+<button class="btn btn-primary" id="submitBtn" onclick="submitQuiz()" disabled>Submit Quiz</button>
+</div>
+<div id="resultsArea" class="hidden"></div>
+</div>
+<script>
+const questions = [
+  {
+    question: "What was the primary significance of the sit-in movement that began with the Greensboro sit-ins in 1960?",
+    difficulty: "medium",
+    topic: "Civil Rights Movement",
+    options: [
+      {label:"A", text:"It was the first time African Americans protested segregation", correct:false},
+      {label:"B", text:"It demonstrated that ordinary people, especially students, could effectively challenge segregation through direct nonviolent action", correct:true},
+      {label:"C", text:"It immediately led to the passage of the Civil Rights Act", correct:false},
+      {label:"D", text:"It was organized by Martin Luther King Jr. as part of the SCLC strategy", correct:false}
+    ],
+    explanation: "The Greensboro sit-ins showed that grassroots, student-led direct action could challenge the Jim Crow system without needing large organizational infrastructure. This wasn't the first protest against segregation (that goes back decades), and the Civil Rights Act didn't pass until 1964. The sit-ins were initiated by four college students, not by MLK or the SCLC.",
+    deeper: "The sit-ins spawned the Student Nonviolent Coordinating Committee (SNCC), which became one of the most important and radical civil rights organizations. SNCC's evolution from nonviolent direct action to Black Power by the late 1960s tells you a lot about how the movement's internal tensions played out."
+  },
+  {
+    question: "Why was JFK 'initially cool to civil rights' according to the video?",
+    difficulty: "easy",
+    topic: "JFK Presidency",
+    options: [
+      {label:"A", text:"He was personally opposed to racial equality", correct:false},
+      {label:"B", text:"The Cold War, including the Cuban Missile Crisis and Bay of Pigs, occupied most of his attention", correct:true},
+      {label:"C", text:"He didn't believe the federal government had authority over civil rights", correct:false},
+      {label:"D", text:"He was waiting for the Supreme Court to act first", correct:false}
+    ],
+    explanation: "The video explicitly states that the Cold War occupied a lot of Kennedy's time, citing the Cuban Missile Crisis and Bay of Pigs as examples. It wasn't that JFK opposed civil rights in principle; his administration's bandwidth was dominated by geopolitical crisis management. The demonstrations of 1963 eventually pushed him to act.",
+    deeper: "There's a deeper strategic calculation the video doesn't fully explore: JFK needed Southern Democratic votes in Congress for his legislative agenda. Pushing civil rights too hard risked fracturing his own party's coalition, which is exactly what eventually happened under LBJ."
+  },
+  {
+    question: "Which legislative achievement does the video identify as one of the 'great bright spots in American history'?",
+    difficulty: "easy",
+    topic: "Civil Rights Legislation",
+    options: [
+      {label:"A", text:"The Voting Rights Act of 1965", correct:false},
+      {label:"B", text:"The Equal Pay Act of 1963", correct:false},
+      {label:"C", text:"The Civil Rights Act of 1964", correct:true},
+      {label:"D", text:"The Gulf of Tonkin Resolution", correct:false}
+    ],
+    explanation: "The video describes the Civil Rights Act as emerging from the demands made at the March on Washington and calls it one of the great bright spots. The Voting Rights Act was also hugely important but is discussed separately. The Equal Pay Act addressed gender discrimination specifically. The Gulf of Tonkin Resolution was about Vietnam, not civil rights.",
+    deeper: "The Civil Rights Act of 1964 was actually built on the commerce clause of the Constitution rather than the 14th Amendment's equal protection clause. The legal strategy was that segregated businesses affected interstate commerce. This constitutional workaround tells you something about the limits of how equal protection was being interpreted at the time."
+  },
+  {
+    question: "According to the video, what was a fundamental flaw in LBJ's War on Poverty?",
+    difficulty: "hard",
+    topic: "Great Society",
+    options: [
+      {label:"A", text:"It spent too much money on direct cash payments to the poor", correct:false},
+      {label:"B", text:"It treated poverty as a social problem and emphasized training, while failing to account for the economic shift from high-wage manufacturing to lower-wage service jobs", correct:true},
+      {label:"C", text:"It only targeted urban areas and ignored rural poverty", correct:false},
+      {label:"D", text:"It was vetoed by Congress before it could take effect", correct:false}
+    ],
+    explanation: "The video specifically states that Johnson treated poverty as a social problem rather than an economic one, focusing on training instead of jobs or guaranteed income. This missed the structural shift happening in the American economy: deindustrialization was eliminating the high-wage union manufacturing jobs that had built the middle class, replacing them with lower-wage service work.",
+    deeper: "This is arguably the single most consequential policy framing error of the 20th century. The distinction between 'social problem' (fix the people) and 'economic problem' (fix the structures) still dominates poverty debates today. The guaranteed income approach Johnson rejected was actually tested in several Nixon-era experiments and showed promising results."
+  },
+  {
+    question: "How many American troops were in Vietnam by 1968, according to the video?",
+    difficulty: "easy",
+    topic: "Vietnam War",
+    options: [
+      {label:"A", text:"About 100,000", correct:false},
+      {label:"B", text:"About 250,000", correct:false},
+      {label:"C", text:"Over 500,000", correct:true},
+      {label:"D", text:"About 1 million", correct:false}
+    ],
+    explanation: "The video states that by 1968, over 500,000 American troops were in Vietnam. This massive escalation occurred after the Gulf of Tonkin Resolution in 1964 gave LBJ broad authority to expand military operations.",
+    deeper: "The escalation from 16,000 'advisors' under JFK to over 500,000 combat troops under LBJ happened through a series of incremental decisions, none of which were ever framed as a full declaration of war. This 'mission creep' dynamic has become a template for understanding how limited commitments can spiral."
+  },
+  {
+    question: "The video argues that college students opposed the Vietnam War primarily because:",
+    difficulty: "medium",
+    topic: "Anti-War Movement",
+    options: [
+      {label:"A", text:"They were ideologically committed to communism", correct:false},
+      {label:"B", text:"They had studied Vietnamese history and understood the conflict was a civil war", correct:false},
+      {label:"C", text:"They had student deferments and didn't want to go, but they really didn't want their friends to go", correct:true},
+      {label:"D", text:"They were following the leadership of Martin Luther King Jr.", correct:false}
+    ],
+    explanation: "The video makes the pointed observation that college students opposed the war not because of deep ideological commitment but because of personal stakes: they had deferments but didn't want their friends drafted. This is a characteristically John Green move, deflating romanticized narratives with more grounded motivations.",
+    deeper: "The student deferment system created a massive class divide in who actually fought in Vietnam. Working-class and minority men were disproportionately drafted. This class dimension of the anti-war movement is often obscured by the focus on campus protests."
+  },
+  {
+    question: "What event in June 1969 touched off the modern gay liberation movement?",
+    difficulty: "easy",
+    topic: "Social Movements",
+    options: [
+      {label:"A", text:"The March on Washington for gay rights", correct:false},
+      {label:"B", text:"Police raided the Stonewall Inn, and members of the gay community began a series of demonstrations", correct:true},
+      {label:"C", text:"The Supreme Court struck down anti-sodomy laws", correct:false},
+      {label:"D", text:"Harvey Milk was elected to office in San Francisco", correct:false}
+    ],
+    explanation: "The video identifies the police raid on the Stonewall Inn and the subsequent community demonstrations as the beginning of the modern gay liberation movement. The Supreme Court didn't strike down anti-sodomy laws until Lawrence v. Texas in 2003. Harvey Milk wasn't elected until 1977.",
+    deeper: "What made Stonewall different from previous raids on gay bars was that the patrons fought back, and the community sustained demonstrations for several days. The participants were disproportionately transgender women of color and other marginalized members of the community, a fact often underemphasized in mainstream accounts."
+  },
+  {
+    question: "Betty Friedan's The Feminine Mystique (1963) argued that:",
+    difficulty: "medium",
+    topic: "Women's Movement",
+    options: [
+      {label:"A", text:"Women should focus on entering the workforce immediately", correct:false},
+      {label:"B", text:"Women needed the right to vote to achieve equality", correct:false},
+      {label:"C", text:"The idea that women should find fulfillment solely through homemaking and family was a form of oppression", correct:true},
+      {label:"D", text:"Women's rights could only be achieved through constitutional amendment", correct:false}
+    ],
+    explanation: "The Feminine Mystique challenged the post-WWII cultural consensus that women's primary role was as homemakers and mothers. Friedan identified 'the problem that has no name': the widespread unhappiness of educated women confined to domestic roles. Women already had the right to vote (19th Amendment, 1920).",
+    deeper: "Friedan's book is often credited as launching second-wave feminism, but it's been criticized for centering the experience of white, middle-class, suburban women. Working-class women and women of color had always worked outside the home, so the 'mystique' of fulfilled domesticity was never their reality."
+  },
+  {
+    question: "Which Warren Court decision struck down laws banning interracial marriage?",
+    difficulty: "medium",
+    topic: "Warren Court",
+    options: [
+      {label:"A", text:"Miranda v. Arizona", correct:false},
+      {label:"B", text:"Griswold v. Connecticut", correct:false},
+      {label:"C", text:"Loving v. Virginia", correct:true},
+      {label:"D", text:"New York Times v. Sullivan", correct:false}
+    ],
+    explanation: "The video highlights Loving v. Virginia as 'the most appropriately named case ever' for striking down laws banning interracial marriage. Miranda v. Arizona dealt with suspects' rights during interrogation. Griswold v. Connecticut established a right to privacy regarding contraception. NYT v. Sullivan expanded freedom of the press.",
+    deeper: "Loving v. Virginia (1967) established that marriage is a fundamental right under the 14th Amendment. This exact legal reasoning was later cited in Obergefell v. Hodges (2015) when the Supreme Court legalized same-sex marriage nationwide, drawing a direct line from the 1960s rights revolution to 21st-century civil rights."
+  },
+  {
+    question: "What concept did 1960s-era feminists introduce that reframed personal experiences as political issues?",
+    difficulty: "hard",
+    topic: "Women's Movement",
+    options: [
+      {label:"A", text:"'Equal rights under law'", correct:false},
+      {label:"B", text:"'The personal is political'", correct:true},
+      {label:"C", text:"'Separate spheres'", correct:false},
+      {label:"D", text:"'Consciousness raising'", correct:false}
+    ],
+    explanation: "The video specifically identifies the phrase 'the personal is political' as a crucial contribution of 1960s feminism. This framing argued that issues like equal pay, childcare, and abortion were not merely private matters but political questions requiring collective action and legislation.",
+    deeper: "This conceptual move had implications far beyond feminism. It influenced how we think about all forms of systemic oppression: the idea that individual experiences of discrimination are not personal failures but symptoms of structural power arrangements. It's essentially a systems-thinking framework applied to social justice."
+  },
+  {
+    question: "According to the Eric Foner quote cited in the video, what was a lasting unsolved problem despite the gains of the 1960s?",
+    difficulty: "hard",
+    topic: "Legacy of the 1960s",
+    options: [
+      {label:"A", text:"Racial segregation in public schools", correct:false},
+      {label:"B", text:"Urban poverty, even as the historic gap between whites and blacks in education and income narrowed", correct:true},
+      {label:"C", text:"The lack of voting rights for African Americans", correct:false},
+      {label:"D", text:"The absence of any civil rights legislation", correct:false}
+    ],
+    explanation: "The Foner quote notes that while the education, income, and employment gap between whites and blacks narrowed considerably by the 1990s, deindustrialization and urban decay continued to affect numerous families, and most suburbs remained off-limits to non-white people. The median wealth gap persisted.",
+    deeper: "This framing reveals something crucial about how progress actually works: legislative victories (Civil Rights Act, Voting Rights Act) can close formal legal gaps while leaving structural economic gaps intact. The wealth gap specifically has proven far more resistant to policy intervention than the income or education gap."
+  },
+  {
+    question: "The video's central thesis about the 1960s is that the decade's changes were:",
+    difficulty: "hard",
+    topic: "Historical Interpretation",
+    options: [
+      {label:"A", text:"A sudden revolution caused by the baby boomer generation", correct:false},
+      {label:"B", text:"Primarily the result of a few charismatic leaders like JFK and MLK", correct:false},
+      {label:"C", text:"The result of a long process that had been going on for decades, arguably hundreds of years", correct:true},
+      {label:"D", text:"Largely superficial and didn't produce lasting change", correct:false}
+    ],
+    explanation: "Green explicitly pushes back against the idea that the 1960s were a radical revolution. His final point is that the changes were 'the result of a process that had been going on for decades... arguably for hundreds of years.' This frames the 1960s as an acceleration point in long-running historical trajectories rather than a break from the past.",
+    deeper: "This interpretive lens (continuity vs. rupture) is one of the fundamental debates in historiography. Seeing the 1960s as continuity rather than revolution forces you to look at the legal, organizational, and intellectual groundwork laid in the 1940s and 1950s, particularly the NAACP's legal strategy and the labor movement's infrastructure."
+  }
+];
+
+let answers = {};
+let submitted = false;
+
+function render() {
+  const container = document.getElementById('quizContainer');
+  container.innerHTML = questions.map((q, i) => `
+    <div class="q-card" id="qcard-${i}">
+      <div class="q-num">Question ${i+1} <span class="q-diff ${q.difficulty}">${q.difficulty}</span> &middot; ${q.topic}</div>
+      <div class="q-text">${q.question}</div>
+      <div id="options-${i}">
+        ${q.options.map(o => `
+          <button class="option ${answers[i]===o.label?'selected':''} ${submitted?(o.correct?'correct locked':(answers[i]===o.label?'incorrect locked':'locked')):''}}"
+            onclick="select(${i},'${o.label}')" ${submitted?'disabled':''}>
+            <span class="badge">${o.label}</span>${o.text}
+          </button>
+        `).join('')}
+      </div>
+      <div class="explanation ${submitted?'show':''}" id="exp-${i}">
+        ${q.explanation}
+        <div class="deeper">${q.deeper}</div>
+      </div>
+    </div>
+  `).join('');
+
+  // Update progress
+  const answered = Object.keys(answers).length;
+  document.getElementById('progressBar').style.width = `${(answered/questions.length)*100}%`;
+  document.getElementById('submitBtn').disabled = answered < questions.length;
+
+  if (submitted) {
+    questions.forEach((q, i) => {
+      const card = document.getElementById(`qcard-${i}`);
+      const correct = q.options.find(o => o.correct).label;
+      card.classList.add(answers[i] === correct ? 'correct-card' : 'incorrect-card');
+    });
+  }
+}
+
+function select(qi, label) {
+  if (submitted) return;
+  answers[qi] = label;
+  render();
+}
+
+function submitQuiz() {
+  if (Object.keys(answers).length < questions.length) return;
+  submitted = true;
+
+  let correct = 0;
+  const details = questions.map((q, i) => {
+    const correctLabel = q.options.find(o => o.correct).label;
+    const isCorrect = answers[i] === correctLabel;
+    if (isCorrect) correct++;
+    return { question: q.question, correct: isCorrect, topic: q.topic };
+  });
+
+  const score = Math.round((correct / questions.length) * 100);
+  const scoreClass = score >= 85 ? 'great' : score >= 65 ? 'okay' : 'needs-work';
+
+  const wrongTopics = details.filter(d => !d.correct).map(d => d.topic);
+  const uniqueWeak = [...new Set(wrongTopics)];
+
+  document.getElementById('submitArea').innerHTML = '';
+  document.getElementById('resultsArea').classList.remove('hidden');
+  document.getElementById('resultsArea').innerHTML = `
+    <div class="score-display">
+      <div class="score-big ${scoreClass}">${score}%</div>
+      <div class="score-sub">${correct} of ${questions.length} correct</div>
+    </div>
+    ${uniqueWeak.length ? `
+      <div style="text-align:center;margin-bottom:24px;">
+        <p style="color:var(--muted);font-size:14px;">Areas to focus on: ${uniqueWeak.map(t=>`<span style="color:var(--red);font-weight:600;">${t}</span>`).join(', ')}</p>
+      </div>
+    ` : '<p style="text-align:center;color:var(--green);font-size:16px;margin-bottom:24px;">Excellent recall. Review the deeper insights below to consolidate.</p>'}
+    <p style="text-align:center;color:var(--muted);font-size:14px;">Scroll up to review each question with detailed explanations and deeper insights.</p>
+  `;
+
+  render();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+render();
+</script>
+</body>
+</html>
