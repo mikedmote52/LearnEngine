@@ -211,6 +211,12 @@ function extractVideoId(url){
 }
 
 async function fetchTranscript(videoId){
+  // Method 0: Try local transcript proxy (runs on your Mac via transcript_proxy.py)
+  try{
+    const r=await fetch(`http://localhost:8219/transcript?v=${videoId}`,{signal:AbortSignal.timeout(5000)});
+    if(r.ok){const j=await r.json();if(j.full_text)return j.full_text}
+  }catch(e){/* local proxy not running, try other methods */}
+
   // Method 1: Use YouTube's innertube API via CORS proxy to get player response
   const proxies=['https://api.allorigins.win/raw?url=','https://api.codetabs.com/v1/proxy?quest='];
 
