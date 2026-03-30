@@ -1,37 +1,27 @@
 #!/bin/bash
-# LearnEngine - Quick Start
-# Run this script to install dependencies and launch the app.
-
+# LearnEngine - Start the local server
+# Usage: ./start.sh
 cd "$(dirname "$0")"
 
-echo ""
-echo "  ╔═══════════════════════════════╗"
-echo "  ║       LearnEngine v1.0        ║"
-echo "  ╚═══════════════════════════════╝"
-echo ""
-
 # Check Python
-if ! command -v python3 &> /dev/null; then
-    echo "  ERROR: Python 3 is required but not installed."
-    echo "  Install it from https://www.python.org/downloads/"
-    exit 1
+if ! command -v python3 &>/dev/null; then
+  echo "Error: python3 not found. Install Python 3 first."
+  exit 1
 fi
 
-# Install dependencies
-echo "  Installing dependencies..."
-pip3 install -r requirements.txt --quiet --break-system-packages 2>/dev/null || \
-pip3 install -r requirements.txt --quiet
+# Check/install youtube-transcript-api
+python3 -c "import youtube_transcript_api" 2>/dev/null || {
+  echo "Installing youtube-transcript-api..."
+  pip3 install youtube-transcript-api
+}
 
-# Create data directory
-mkdir -p data
+# Get local IP for phone access
+LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
 
 echo ""
 echo "  Starting LearnEngine..."
-echo "  Open http://127.0.0.1:5050 in your browser"
-echo "  Press Ctrl+C to stop"
-echo ""
-echo "  Set LEARNENGINE_HOST=0.0.0.0 to allow network access"
-echo "  Set ANTHROPIC_API_KEY to skip manual key setup"
+echo "  Computer: http://localhost:8219"
+[ -n "$LOCAL_IP" ] && echo "  Phone:    http://$LOCAL_IP:8219"
 echo ""
 
-python3 app.py
+python3 transcript_proxy.py
