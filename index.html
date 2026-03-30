@@ -211,45 +211,116 @@ function extractVideoId(url){
 }
 
 async function fetchTranscript(videoId){
-  // Try multiple CORS proxies
+  // Method 1: Use YouTube's innertube API via CORS proxy to get player response
   const proxies=['https://api.allorigins.win/raw?url=','https://api.codetabs.com/v1/proxy?quest='];
+
+  // Try fetching the embed page (lighter, less bot detection)
+  const urls=[
+    'https://www.youtube.com/watch?v='+videoId,
+    'https://www.youtube.com/embed/'+videoId,
+    'https://m.youtube.com/watch?v='+videoId
+  ];
+
   let html=null;
   for(const proxy of proxies){
-    try{
-      const r=await fetch(proxy+encodeURIComponent('https://www.youtube.com/watch?v='+videoId),{signal:AbortSignal.timeout(15000)});
-      if(r.ok){html=await r.text();break}
-    }catch(e){continue}
+    for(const pageUrl of urls){
+      try{
+        const r=await fetch(proxy+encodeURIComponent(pageUrl),{signal:AbortSignal.timeout(15000)});
+        if(r.ok){
+          const text=await r.text();
+          // Check if we got actual video page (not consent/error)
+          if(text.includes('captionTracks')||text.includes('captions')){html=text;break}
+        }
+      }catch(e){continue}
+    }
+    if(html)break;
   }
-  if(!html)throw new Error('Could not reach YouTube. Try pasting the transcript manually.');
 
-  // Extract captions URL from page data
-  const captionMatch=html.match(/"captionTracks"\s*:\s*(\[.*?\])/);
-  if(!captionMatch)throw new Error('No captions found for this video. Try pasting the transcript manually.');
-  let tracks;
-  try{tracks=JSON.parse(captionMatch[1])}catch(e){throw new Error('Failed to parse caption data')}
-  const enTrack=tracks.find(t=>t.languageCode==='en')||tracks.find(t=>t.languageCode?.startsWith('en'))||tracks[0];
-  if(!enTrack||!enTrack.baseUrl)throw new Error('No usable caption track found');
+  if(html){
+    // Try multiple regex patterns to extract caption tracks
+    let tracks=null;
+    const patterns=[
+      /"captionTracks"\s*:\s*(\[.*?\])\s*[,}]/,
+      /captionTracks.*?(\[.*?"baseUrl".*?\])/s,
+      /"playerCaptionsTracklistRenderer".*?"captionTracks"\s*:\s*(\[[\s\S]*?\])\s*,/
+    ];
+    for(const pat of patterns){
+      const m=html.match(pat);
+      if(m){try{tracks=JSON.parse(m[1]);break}catch(e){}}
+    }
 
-  // Fetch caption XML
-  let captionXml=null;
+    if(tracks&&tracks.length){
+      const enTrack=tracks.find(t=>t.languageCode==='en')||tracks.find(t=>t.languageCode?.startsWith('en'))||tracks[0];
+      if(enTrack?.baseUrl){
+        // Fetch caption XML
+        for(const proxy of proxies){
+          try{
+            const r=await fetch(proxy+encodeURIComponent(enTrack.baseUrl),{signal:AbortSignal.timeout(15000)});
+            if(r.ok){
+              const captionXml=await r.text();
+              const parser=new DOMParser();
+              const doc=parser.parseFromString(captionXml,'text/xml');
+              const texts=[...doc.querySelectorAll('text')].map(t=>{
+                let s=t.textContent||'';
+                s=s.replace(/&#39;/g,"'").replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/\n/g,' ');
+                return s.trim();
+              }).filter(Boolean);
+              if(texts.length)return texts.join(' ');
+            }
+          }catch(e){continue}
+        }
+      }
+    }
+  }
+
+  // Method 2: Try YouTube's timedtext API directly
+  const ttUrls=[
+    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=json3`,
+    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en`,
+  ];
   for(const proxy of proxies){
+    for(const ttUrl of ttUrls){
+      try{
+        const r=await fetch(proxy+encodeURIComponent(ttUrl),{signal:AbortSignal.timeout(10000)});
+        if(r.ok){
+          const text=await r.text();
+          if(text.includes('"segs"')||text.includes('<text')){
+            // JSON format
+            try{
+              const j=JSON.parse(text);
+              const segs=[];
+              (j.events||[]).forEach(ev=>{(ev.segs||[]).forEach(s=>{if(s.utf8&&s.utf8.trim())segs.push(s.utf8.trim())})});
+              if(segs.length)return segs.join(' ');
+            }catch(e){}
+            // XML format
+            const parser=new DOMParser();
+            const doc=parser.parseFromString(text,'text/xml');
+            const texts=[...doc.querySelectorAll('text')].map(t=>t.textContent?.trim()).filter(Boolean);
+            if(texts.length)return texts.join(' ');
+          }
+        }
+      }catch(e){continue}
+    }
+  }
+
+  // Method 3: Try third-party transcript services
+  const thirdParty=[
+    `https://yt.lemnoslife.com/noKey/videos?part=transcript&id=${videoId}`,
+  ];
+  for(const url of thirdParty){
     try{
-      const r=await fetch(proxy+encodeURIComponent(enTrack.baseUrl),{signal:AbortSignal.timeout(15000)});
-      if(r.ok){captionXml=await r.text();break}
+      const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
+      if(r.ok){
+        const j=await r.json();
+        const items=j?.items?.[0]?.transcript?.content;
+        if(items?.length){
+          return items.map(i=>i.text||'').filter(Boolean).join(' ');
+        }
+      }
     }catch(e){continue}
   }
-  if(!captionXml)throw new Error('Could not fetch captions. Try pasting the transcript manually.');
 
-  // Parse XML
-  const parser=new DOMParser();
-  const doc=parser.parseFromString(captionXml,'text/xml');
-  const texts=[...doc.querySelectorAll('text')].map(t=>{
-    let s=t.textContent||'';
-    s=s.replace(/&#39;/g,"'").replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/\n/g,' ');
-    return s.trim();
-  }).filter(Boolean);
-  if(!texts.length)throw new Error('Captions were empty');
-  return texts.join(' ');
+  throw new Error('Could not fetch transcript automatically. Open the "Paste transcript manually" section below, go to the YouTube video, click "..." > "Show transcript", copy the text, and paste it here.');
 }
 
 // ==== OpenRouter LLM (direct from browser) ====
