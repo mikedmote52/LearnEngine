@@ -150,26 +150,30 @@ function sm2Update(concept,quality){
 }
 
 function getDueConcepts(profile){
-  const now=new Date();const due=[];
+  const now=Date.now();const due=[];
   for(const[id,c]of Object.entries(profile.concepts||{})){
-    if(!c.nextReview||new Date(c.nextReview)<=now)due.push({id,...c});
+    if(!c.nextReview||new Date(c.nextReview).getTime()<=now)due.push({id,...c});
   }
-  due.sort((a,b)=>(a.nextReview||'2000')>(b.nextReview||'2000')?1:-1);
+  due.sort((a,b)=>new Date(a.nextReview||0).getTime()-new Date(b.nextReview||0).getTime());
   return due;
 }
 
 async function recordResult(quizId,answers,questions){
+  if(!questions||!questions.length)return{score:0,correct:0,total:0,details:[],wrongAnswers:[],weakAreas:[],strongAreas:[],needsFollowup:false,learningStyle:{},dueForReview:0};
   const profile=await getProfile();
   let correct=0;const details=[];const wrong=[];
   questions.forEach((q,i)=>{
     const sel=answers[i];
-    const rightOpt=q.options.find(o=>o.correct);
+    // Normalize options: ensure labels exist
+    const opts=(q.options||[]).map((o,idx)=>({...o,label:o.label||String.fromCharCode(65+idx)}));
+    const rightOpt=opts.find(o=>o.correct);
+    const selOpt=opts.find(o=>o.label===sel);
     const isCorrect=sel===rightOpt?.label;
     if(isCorrect)correct++;
-    else wrong.push({question:q.question,selected:sel,selectedText:(q.options.find(o=>o.label===sel)||{}).text||'',correct:rightOpt?.label,correctText:rightOpt?.text,whyWrong:(q.options.find(o=>o.label===sel)||{}).why_wrong||'',concept_id:q.concept_id,concept_name:q.concept_name,topic:q.topic});
-    const selOpt=q.options.find(o=>o.label===sel);
-    details.push({question:q.question,correct:isCorrect,selected:sel,correctAnswer:rightOpt?.label,correctText:rightOpt?.text,whyWrong:(!isCorrect&&selOpt)?selOpt.why_wrong||'':'',explanation:q.explanation||'',deeperInsight:q.deeper_insight||'',misconception:q.common_misconception||'',concept_id:q.concept_id,concept_name:q.concept_name||'',topic:q.topic||'',bloom:q.bloom_level||''});
-    const cid=q.concept_id||q.question.slice(0,50);
+    else wrong.push({question:q.question,selected:sel,selectedText:selOpt?.text||'',correct:rightOpt?.label,correctText:rightOpt?.text||'',whyWrong:selOpt?.why_wrong||'',explanation:q.explanation||'',concept_id:q.concept_id,concept_name:q.concept_name,topic:q.topic});
+    details.push({question:q.question,correct:isCorrect,selected:sel,selectedText:selOpt?.text||'',correctAnswer:rightOpt?.label,correctText:rightOpt?.text||'',whyWrong:(!isCorrect&&selOpt)?selOpt.why_wrong||'':'',explanation:q.explanation||'',deeperInsight:q.deeper_insight||'',misconception:q.common_misconception||'',concept_id:q.concept_id,concept_name:q.concept_name||'',topic:q.topic||'',bloom:q.bloom_level||''});
+    // Use concept_id or generate stable fallback
+    const cid=q.concept_id||(q.concept_name?q.concept_name.toLowerCase().replace(/\s+/g,'_'):'q_'+i);
     const quality=isCorrect?4:1;
     if(!profile.concepts[cid])profile.concepts[cid]={topic:q.topic||'general',name:q.concept_name||cid,description:q.question.slice(0,200)};
     profile.concepts[cid]=sm2Update(profile.concepts[cid],quality);
@@ -188,20 +192,21 @@ async function recordResult(quizId,answers,questions){
     const t=profile.topics[topic];
     t.strength=.7*t.strength+.3*(s.c/s.t);t.count+=s.t;t.lastSeen=new Date().toISOString();
   }
-  profile.weakAreas=Object.entries(profile.topics).filter(([,d])=>d.strength<.6&&d.count>=2).map(([t])=>t);
-  profile.strongAreas=Object.entries(profile.topics).filter(([,d])=>d.strength>=.85&&d.count>=2).map(([t])=>t);
+  // Weak/strong areas: relax threshold for first quiz (count>=1 instead of 2)
+  const minCount=profile.totalQuizzes<=1?1:2;
+  profile.weakAreas=Object.entries(profile.topics).filter(([,d])=>d.strength<.6&&d.count>=minCount).map(([t])=>t);
+  profile.strongAreas=Object.entries(profile.topics).filter(([,d])=>d.strength>=.85&&d.count>=minCount).map(([t])=>t);
 
   const wrongTopics=details.filter(d=>!d.correct).map(d=>d.topic);
   const ls=profile.learningStyle||{};
-  ls.recentStruggles=wrongTopics;
-  const acc=score;
-  if(total>=3){ls.teachingMode=acc<.4?'foundational':acc<.7?'scaffolded':'challenging'}
+  ls.recentStruggles=[...new Set(wrongTopics)];
+  if(total>=3){ls.teachingMode=score<.4?'foundational':score<.7?'scaffolded':'challenging'}
   profile.learningStyle=ls;
 
   await dbPut('profile',profile);
   await dbPut('history',{id:Date.now(),quizId,timestamp:new Date().toISOString(),score,total,correct});
 
-  return{score:Math.round(score*100*10)/10,correct,total,details,wrongAnswers:wrong,weakAreas:profile.weakAreas,strongAreas:profile.strongAreas,needsFollowup:score<.8,learningStyle:profile.learningStyle,dueForReview:getDueConcepts(profile).length};
+  return{score:Math.round(score*100*10)/10,correct,total,details,wrongAnswers:wrong,weakAreas:profile.weakAreas,strongAreas:profile.strongAreas,needsFollowup:score<.85,learningStyle:profile.learningStyle,dueForReview:getDueConcepts(profile).length};
 }
 
 // ==== YouTube Transcript (client-side) ====
@@ -351,11 +356,26 @@ async function callLLM(prompt,maxTokens=12000){
 
 function parseJSON(text){
   text=text.trim();
-  if(text.startsWith('```')){text=text.split('\n',1).length>1?text.slice(text.indexOf('\n')+1):text.slice(3)}
+  // Strip markdown fences
+  if(text.startsWith('```')){text=text.slice(text.indexOf('\n')+1)}
   if(text.endsWith('```'))text=text.slice(0,-3).trimEnd();
+  // Strip ```json or ``` at start
+  text=text.replace(/^```\w*\n?/,'').replace(/```$/,'').trim();
+  // Try direct parse first
   try{return JSON.parse(text)}catch(e){}
-  const m=text.match(/\{[\s\S]*\}/);
-  if(m){try{return JSON.parse(m[0])}catch(e){}}
+  // Extract outermost JSON object using brace counting
+  let start=-1,depth=0,end=-1;
+  for(let i=0;i<text.length;i++){
+    if(text[i]==='{'){if(start===-1)start=i;depth++}
+    else if(text[i]==='}'){depth--;if(depth===0&&start!==-1){end=i+1;break}}
+  }
+  if(start>=0&&end>start){
+    let jsonStr=text.slice(start,end);
+    try{return JSON.parse(jsonStr)}catch(e){}
+    // Try fixing trailing commas (common LLM mistake)
+    jsonStr=jsonStr.replace(/,\s*([\]}])/g,'$1');
+    try{return JSON.parse(jsonStr)}catch(e){}
+  }
   throw new Error('Could not parse AI response as JSON. Try again.');
 }
 
@@ -429,12 +449,13 @@ function followupPrompt(wrongAnswers,weakConcepts,transcript,learnerCtx){
     const mode=learnerCtx.learning_style?.teachingMode||'scaffolded';
     styleCtx=`\nLEARNER MODE: ${mode}`;
   }
+  const txSection=transcript?`\nTRANSCRIPT (use as source of truth for answers):\n${transcript.slice(0,40000)}`:`\nNo transcript available. Base questions on the concept information provided in WRONG ANSWERS.`;
   return `You are an adaptive tutor. A learner struggled. TEACH through questions, don't just retest.
 
 STRUGGLED WITH: ${JSON.stringify(weakConcepts)}
 WRONG ANSWERS: ${JSON.stringify(wrongAnswers)}
 ${styleCtx}
-TRANSCRIPT: ${transcript.slice(0,40000)}
+${txSection}
 
 Generate 6-10 TEACHING questions. JSON only:
 {
@@ -565,15 +586,24 @@ function renderDashboard(){
 }
 
 function renderProcess(){
-  return`<div class="card"><h2>Process a Video</h2>
+  let html='';
+  if(!S.hasKey){
+    html+=`<div class="card" style="border-color:var(--yellow);text-align:center;padding:24px">
+      <h2 style="color:var(--yellow);margin-bottom:8px">API Key Required</h2>
+      <p style="color:var(--text-muted);margin-bottom:14px;font-size:14px">You need an OpenRouter API key to analyze videos and generate quizzes. It takes 30 seconds to set up.</p>
+      <button class="btn btn-primary" onclick="nav('settings')">Open Settings</button></div>`;
+  }
+  html+=`<div class="card"><h2>Process a Video</h2>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px">Paste a YouTube URL below. LearnEngine will fetch the transcript, analyze the content, fact-check claims, and generate an adaptive quiz.</p>
     <div class="input-group"><label>YouTube URL</label><input type="text" id="vidUrl" placeholder="https://www.youtube.com/watch?v=..."></div>
     <div class="input-group"><label>Title (optional)</label><input type="text" id="vidTitle" placeholder="Video title"></div>
     <details style="margin-bottom:14px"><summary style="cursor:pointer;color:var(--text-muted);font-size:13px">Paste transcript manually (if auto-fetch fails)</summary>
-    <div class="input-group" style="margin-top:10px"><textarea id="manualTx" placeholder="Paste transcript here..."></textarea></div></details>
-    <button class="btn btn-primary" id="processBtn" onclick="processVideo()" ${S.processing?'disabled':''}>
+    <div class="input-group" style="margin-top:10px"><label>Transcript text</label><textarea id="manualTx" placeholder="Go to the YouTube video > click '...' > 'Show transcript' > copy and paste here"></textarea></div></details>
+    <button class="btn btn-primary" id="processBtn" onclick="processVideo()" ${S.processing||!S.hasKey?'disabled':''}>
     ${S.processing?'<span class="spinner" style="width:16px;height:16px;border-width:2px;vertical-align:middle;margin-right:8px"></span>Processing... (30-60s)':'Analyze & Generate Quiz'}</button>
     <div id="processErr" style="color:var(--red);margin-top:10px;font-size:14px"></div>
     <div id="processStatus" style="color:var(--text-muted);margin-top:8px;font-size:13px"></div></div>`;
+  return html;
 }
 
 function renderSettings(){
@@ -605,11 +635,13 @@ function renderQuiz(){
   if(q.diagnosis)html+=`<div class="teaching-banner"><strong>Adaptive Mode</strong><br>${E(q.diagnosis)}<br><em style="color:var(--text-muted)">${E(q.teaching_strategy||'')}</em></div>`;
 
   qs.forEach((qu,i)=>{
-    html+=`<div class="question-card"><div class="q-num">Q${i+1}${qu.difficulty?' &middot; '+E(qu.difficulty):''}${qu.topic?' &middot; '+E(qu.topic):''}${qu.bloom_level?' &middot; '+E(qu.bloom_level):''}</div>
+    // Normalize labels if missing
+    const opts=(qu.options||[]).map((o,idx)=>({...o,label:o.label||String.fromCharCode(65+idx)}));
+    html+=`<div class="question-card" id="q${i}"><div class="q-num">Q${i+1}${qu.difficulty?' &middot; '+E(qu.difficulty):''}${qu.topic?' &middot; '+E(qu.topic):''}${qu.bloom_level?' &middot; '+E(qu.bloom_level):''}</div>
     <div class="q-text">${E(qu.question)}</div>
     ${qu.scaffold_note?`<p style="font-size:12px;color:var(--cyan);margin-bottom:10px;font-style:italic">${E(qu.scaffold_note)}</p>`:''}
-    <div>${(qu.options||[]).map(o=>`<button class="option ${S.answers[i]===o.label?'selected':''}" onclick="pick(${i},'${E(o.label)}')"><span class="badge">${E(o.label)}</span>${E(o.text)}</button>`).join('')}</div>
-    ${qu.hint&&!S.hints[i]?`<div class="hint-box" onclick="S.hints[${i}]=true;render()">Need a hint? Tap here.</div>`:''}
+    <div>${opts.map(o=>`<button class="option ${S.answers[i]===o.label?'selected':''}" onclick="pick(${i},'${o.label.replace(/'/g,"\\'")}')"><span class="badge">${E(o.label)}</span>${E(o.text)}</button>`).join('')}</div>
+    ${qu.hint&&!S.hints[i]?`<div class="hint-box" onclick="showHint(${i})">Need a hint? Tap here.</div>`:''}
     ${qu.hint&&S.hints[i]?`<div class="hint-box" style="cursor:default">${E(qu.hint)}</div>`:''}</div>`;
   });
 
@@ -675,7 +707,8 @@ function renderHistory(){
 
 // ==== Actions ====
 function nav(v){S.view=v;S.hints={};if(v==='dashboard')init();else render();if(v==='settings')loadSettingsValues()}
-function pick(i,label){S.answers[i]=label;render()}
+function pick(i,label){if(!label)return;S.answers[i]=label;const sy=window.scrollY;render();window.scrollTo(0,sy)}
+function showHint(i){S.hints[i]=true;const sy=window.scrollY;render();window.scrollTo(0,sy)}
 
 async function loadSettingsValues(){
   setTimeout(async()=>{
@@ -747,6 +780,24 @@ async function processVideo(){
     const text=await callLLM(analyzePrompt(title||'Video',transcript,learnerCtx),12000);
     const analysis=parseJSON(text);
 
+    // Validate quiz: ensure each question has options with exactly one correct
+    if(analysis.quiz&&analysis.quiz.length){
+      analysis.quiz=analysis.quiz.filter(q=>{
+        if(!q.question||!q.options||!q.options.length)return false;
+        const correctCount=q.options.filter(o=>o.correct).length;
+        if(correctCount!==1){
+          // Fix: if no correct answer marked, skip the question
+          if(correctCount===0)return false;
+          // If multiple correct, keep only first
+          let found=false;
+          q.options.forEach(o=>{if(o.correct&&found)o.correct=false;if(o.correct)found=true});
+        }
+        // Ensure labels exist
+        q.options.forEach((o,idx)=>{if(!o.label)o.label=String.fromCharCode(65+idx)});
+        return true;
+      });
+    }
+
     const videoData={video_id:videoId,url:url||'manual',title:title||'Video '+videoId,transcript:{full_text:transcript.slice(0,50000),word_count:transcript.split(/\s+/).length},analysis,processed_at:new Date().toISOString()};
     await dbPut('videos',videoData);
 
@@ -755,10 +806,10 @@ async function processVideo(){
       await dbPut('quizzes',quiz);
       S.currentQuiz=quiz;S.answers={};S.hints={};
       S.videos=await dbGetAll('videos');S.quizzes=await dbGetAll('quizzes');
-      S.processing=false;S.view='quiz';render();
+      S.processing=false;S.view='quiz';render();window.scrollTo(0,0);
     }else{
       S.processing=false;render();
-      setError('Analysis completed but no quiz was generated. Try again.');
+      setError('Analysis completed but no valid quiz questions were generated. Try again or use a different video.');
     }
   }catch(e){
     S.processing=false;render();
@@ -767,45 +818,53 @@ async function processVideo(){
 }
 
 async function submitQuiz(){
-  const q=S.currentQuiz;if(!q)return;
-  S.results=await recordResult(q.id,S.answers,q.questions);
-  S.profile=await getProfile();S.dueCount=getDueConcepts(S.profile).length;
-  S.view='results';render();window.scrollTo(0,0);
+  const q=S.currentQuiz;if(!q||!q.questions?.length)return;
+  S.results=null;
+  try{
+    S.results=await recordResult(q.id,S.answers,q.questions);
+    S.profile=await getProfile();S.dueCount=getDueConcepts(S.profile).length;
+    S.view='results';render();window.scrollTo(0,0);
+  }catch(e){alert('Error scoring quiz: '+e.message)}
 }
 
 async function requestFollowup(){
   const q=S.currentQuiz;const r=S.results;if(!q||!r)return;
-  S.processing=true;S.view='dashboard';render();
+  S.processing=true;render();
   try{
     const profile=await getProfile();
     const video=await dbGet('videos',q.video_id);
+    const transcript=video?.transcript?.full_text||'';
+    // Deduplicate wrong concepts
+    const weakConceptIds=[...new Set(r.wrongAnswers.map(w=>w.concept_id).filter(Boolean))];
+    const weakConcepts=r.wrongAnswers.filter((w,i,arr)=>arr.findIndex(x=>x.concept_id===w.concept_id)===i);
     const text=await callLLM(followupPrompt(
       r.wrongAnswers,
-      r.wrongAnswers.map(w=>w.concept_id),
-      video?.transcript?.full_text||'',
+      weakConceptIds,
+      transcript,
       {learning_style:profile.learningStyle||{},weak_areas:profile.weakAreas||[],overall_accuracy:Math.round((profile.accuracy||.5)*100)}
     ),10000);
     const result=parseJSON(text);
-    const followup={id:Date.now().toString(36),video_id:q.video_id,video_title:q.video_title,quiz_type:'followup',questions:result.quiz||[],focus_areas:result.focus_areas||[],diagnosis:result.diagnosis||'',teaching_strategy:result.teaching_strategy||'',created_at:new Date().toISOString()};
+    if(!result.quiz||!result.quiz.length)throw new Error('Follow-up generated no questions. Try again.');
+    const followup={id:Date.now().toString(36),video_id:q.video_id,video_title:q.video_title,quiz_type:'followup',questions:result.quiz,focus_areas:result.focus_areas||[],diagnosis:result.diagnosis||'',teaching_strategy:result.teaching_strategy||'',created_at:new Date().toISOString()};
     await dbPut('quizzes',followup);
     S.quizzes=await dbGetAll('quizzes');
-    S.currentQuiz=followup;S.answers={};S.hints={};S.processing=false;S.view='quiz';render();window.scrollTo(0,0);
-  }catch(e){S.processing=false;render();alert('Follow-up error: '+e.message)}
+    S.currentQuiz=followup;S.answers={};S.hints={};S.results=null;S.processing=false;S.view='quiz';render();window.scrollTo(0,0);
+  }catch(e){S.processing=false;S.view='results';render();alert('Follow-up error: '+e.message)}
 }
 
 async function startReview(){
-  S.processing=true;S.view='dashboard';render();
+  S.processing=true;render();
   try{
     const profile=await getProfile();
-    const due=getDueConcepts(profile).slice(0,15).map(c=>({id:c.id,name:c.name,topic:c.topic,mastery:c.mastery,tested:c.tested}));
-    if(!due.length){S.processing=false;render();alert('No concepts due for review');return}
+    const due=getDueConcepts(profile).slice(0,15).map(c=>({id:c.id,name:c.name,topic:c.topic,mastery:Math.round((c.mastery||0)*100)+'%',tested:c.tested}));
+    if(!due.length){S.processing=false;render();alert('No concepts due for review right now.');return}
     const text=await callLLM(reviewPrompt(due),8000);
     const result=parseJSON(text);
-    if(result.message){alert(result.message);S.processing=false;render();return}
-    const review={id:Date.now().toString(36),video_id:'review',video_title:'Spaced Review',quiz_type:'review',questions:result.quiz||[],focus_areas:result.focus_areas||[],created_at:new Date().toISOString()};
+    if(!result.quiz||!result.quiz.length){S.processing=false;render();alert('Review generated no questions. Try again.');return}
+    const review={id:Date.now().toString(36),video_id:'review',video_title:'Spaced Review',quiz_type:'review',questions:result.quiz,focus_areas:result.focus_areas||[],created_at:new Date().toISOString()};
     await dbPut('quizzes',review);
     S.quizzes=await dbGetAll('quizzes');
-    S.currentQuiz=review;S.answers={};S.hints={};S.processing=false;S.view='quiz';render();window.scrollTo(0,0);
+    S.currentQuiz=review;S.answers={};S.hints={};S.results=null;S.processing=false;S.view='quiz';render();window.scrollTo(0,0);
   }catch(e){S.processing=false;render();alert('Review error: '+e.message)}
 }
 
