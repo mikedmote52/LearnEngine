@@ -167,7 +167,8 @@ async function recordResult(quizId,answers,questions){
     const isCorrect=sel===rightOpt?.label;
     if(isCorrect)correct++;
     else wrong.push({question:q.question,selected:sel,selectedText:(q.options.find(o=>o.label===sel)||{}).text||'',correct:rightOpt?.label,correctText:rightOpt?.text,whyWrong:(q.options.find(o=>o.label===sel)||{}).why_wrong||'',concept_id:q.concept_id,concept_name:q.concept_name,topic:q.topic});
-    details.push({question:q.question,correct:isCorrect,selected:sel,correctAnswer:rightOpt?.label,correctText:rightOpt?.text,explanation:q.explanation||'',deeperInsight:q.deeper_insight||'',misconception:q.common_misconception||'',concept_id:q.concept_id,concept_name:q.concept_name||'',topic:q.topic||'',bloom:q.bloom_level||''});
+    const selOpt=q.options.find(o=>o.label===sel);
+    details.push({question:q.question,correct:isCorrect,selected:sel,correctAnswer:rightOpt?.label,correctText:rightOpt?.text,whyWrong:(!isCorrect&&selOpt)?selOpt.why_wrong||'':'',explanation:q.explanation||'',deeperInsight:q.deeper_insight||'',misconception:q.common_misconception||'',concept_id:q.concept_id,concept_name:q.concept_name||'',topic:q.topic||'',bloom:q.bloom_level||''});
     const cid=q.concept_id||q.question.slice(0,50);
     const quality=isCorrect?4:1;
     if(!profile.concepts[cid])profile.concepts[cid]={topic:q.topic||'general',name:q.concept_name||cid,description:q.question.slice(0,200)};
@@ -414,7 +415,12 @@ RULES:
 - Bloom's: 20% remember, 30% understand, 25% apply, 15% analyze, 10% evaluate
 - Wrong options = REAL misconceptions, not obviously wrong
 - Fact-check ALL claims, dates, statistics
-- Every hint guides thinking, doesn't reveal answer`;
+- Every hint guides thinking, doesn't reveal answer
+- CRITICAL: Every correct answer MUST be verifiable directly from the transcript. Do NOT generate questions whose correct answer relies on information not present in the transcript.
+- Double-check that exactly ONE option per question has "correct": true
+- why_wrong for each incorrect option must clearly explain WHY it is wrong, referencing the transcript
+- explanation field must be a thorough 2-3 sentence teaching moment, not just "This is correct because..."
+- If the transcript contains errors or debatable claims, note this in fact_check and avoid testing those claims as if they are settled facts`;
 }
 
 function followupPrompt(wrongAnswers,weakConcepts,transcript,learnerCtx){
@@ -616,23 +622,32 @@ function renderResults(){
   const sc=r.score>=90?'great':r.score>=70?'okay':r.score>=50?'needs-work':'struggling';
   let html=`<div class="card score-display"><div class="score-big ${sc}">${r.score}%</div>
     <p style="font-size:17px;margin-top:8px">${r.correct} of ${r.total} correct</p>
-    ${r.score>=90?'<p style="color:var(--green);margin-top:14px">Excellent! Concepts scheduled for review.</p>':
-      r.score>=70?'<p style="color:var(--yellow);margin-top:14px">Good foundation. Follow-up will strengthen gaps.</p>':
-      '<p style="color:var(--orange);margin-top:14px">The follow-up will teach these concepts differently.</p>'}
-    ${r.needsFollowup?`<button class="btn btn-orange" style="margin-top:16px" onclick="requestFollowup()">Start Adaptive Follow-Up</button>`:''}</div>`;
+    ${r.score>=90?'<p style="color:var(--green);margin-top:14px">Excellent! Concepts scheduled for spaced review.</p>':
+      r.score>=70?'<p style="color:var(--yellow);margin-top:14px">Good start. The adaptive follow-up below will strengthen what you missed.</p>':
+      r.score>=50?'<p style="color:var(--orange);margin-top:14px">Some gaps found. The follow-up will reteach these concepts step by step.</p>':
+      '<p style="color:var(--red);margin-top:14px">Looks like this material needs a different approach. The follow-up builds from the ground up.</p>'}
+    </div>`;
+
+  if(r.needsFollowup)html+=`<div class="card" style="border:2px solid var(--orange);background:rgba(249,115,22,.06);text-align:center;padding:24px">
+    <h2 style="color:var(--orange);margin-bottom:8px">Adaptive Learning</h2>
+    <p style="color:var(--text-muted);margin-bottom:6px;font-size:14px">The follow-up analyzes your specific mistakes and creates teaching questions that build understanding step by step, starting with the foundations you need.</p>
+    <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px">Missed ${r.total-r.correct} question${r.total-r.correct>1?'s':''} across ${(r.weakAreas||[]).length||'several'} topic area${(r.weakAreas||[]).length!==1?'s':''}.</p>
+    <button class="btn btn-orange" style="font-size:16px;padding:14px 32px" onclick="requestFollowup()">Start Adaptive Follow-Up</button></div>`;
 
   if(r.weakAreas?.length)html+=`<div class="card"><h2>Areas to Strengthen</h2><div>${r.weakAreas.map(a=>`<span class="topic-pill topic-weak">${E(a)}</span>`).join('')}</div></div>`;
 
-  html+=`<div class="card"><h2>Detailed Review</h2>${r.details.map((d,i)=>`
+  html+=`<div class="card"><h2>Review Each Question</h2><p style="color:var(--text-muted);font-size:13px;margin-bottom:14px">Read through the explanations below to understand why each answer is correct.</p>${r.details.map((d,i)=>`
     <div class="question-card" style="border-left:3px solid ${d.correct?'var(--green)':'var(--red)'}">
     <div class="q-num">${d.correct?'CORRECT':'INCORRECT'} &middot; Q${i+1}${d.bloom?' &middot; '+E(d.bloom):''}</div>
     <div class="q-text">${E(d.question)}</div>
-    ${!d.correct?`<p style="margin-bottom:8px"><span style="color:var(--red)">You: ${E(d.selected)}</span> &middot; <span style="color:var(--green)">Correct: ${E(d.correctAnswer)}) ${E(d.correctText)}</span></p>`:''}
-    <div class="explanation">${E(d.explanation)}
+    ${!d.correct?`<p style="margin-bottom:8px"><span style="color:var(--red)">Your answer: ${E(d.selected)}</span> &middot; <span style="color:var(--green)">Correct: ${E(d.correctAnswer)}) ${E(d.correctText)}</span></p>
+    ${d.whyWrong?`<p style="font-size:13px;color:var(--orange);margin-bottom:8px;font-style:italic">Why ${E(d.selected)} is wrong: ${E(d.whyWrong)}</p>`:''}`:''}
+    <div class="explanation"><strong>Explanation:</strong> ${E(d.explanation)}
     ${d.misconception?`<div class="misconception"><strong>Common mistake:</strong> ${E(d.misconception)}</div>`:''}
-    ${d.deeperInsight?`<div class="deeper">${E(d.deeperInsight)}</div>`:''}</div></div>`).join('')}</div>`;
+    ${d.deeperInsight?`<div class="deeper"><strong>Going deeper:</strong> ${E(d.deeperInsight)}</div>`:''}</div></div>`).join('')}</div>`;
 
-  html+=`<div style="text-align:center;padding:20px"><button class="btn btn-secondary" onclick="nav('dashboard')">Dashboard</button></div>`;
+  if(r.needsFollowup)html+=`<div style="text-align:center;padding:20px"><button class="btn btn-orange" style="font-size:15px;padding:12px 28px" onclick="requestFollowup()">Start Adaptive Follow-Up</button></div>`;
+  html+=`<div style="text-align:center;padding:${r.needsFollowup?'0':'20'}px 20px 20px"><button class="btn btn-secondary" onclick="nav('dashboard')">Back to Dashboard</button></div>`;
   return html;
 }
 
