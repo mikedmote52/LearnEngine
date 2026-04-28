@@ -798,13 +798,15 @@ def resolve_podcast(url):
         raise ValueError("Empty URL")
 
     lower = url.lower()
+    # Strip query string for path-extension checks (.mp3?awCollectionId=...)
+    path_only = lower.split("?", 1)[0]
 
-    # Direct audio file
-    if lower.endswith(".mp3") or lower.endswith(".m4a") or lower.endswith(".wav") or lower.endswith(".ogg"):
+    # Direct audio file (path ends in known audio extension)
+    if path_only.endswith(".mp3") or path_only.endswith(".m4a") or path_only.endswith(".wav") or path_only.endswith(".ogg"):
         return {"feed_url": None, "episode": {"audio_url": url, "title": url.rsplit("/", 1)[-1].split("?")[0], "guid": url}, "show_title": ""}
 
     # RSS feed (heuristic: ends in xml/rss or contains /feed)
-    if lower.endswith(".xml") or lower.endswith(".rss") or "/rss" in lower or "/feed" in lower or "feeds." in lower:
+    if path_only.endswith(".xml") or path_only.endswith(".rss") or "/rss" in lower or "/feed" in lower or "feeds." in lower:
         try:
             root = _fetch_rss(url)
             eps = _rss_episodes(root)
@@ -843,8 +845,8 @@ def resolve_podcast(url):
                 pass
         return {"feed_url": feed, "episode": eps[0], "show_title": show}
 
-    # Spotify
-    if "spotify.com" in lower:
+    # Spotify (only the canonical web app domain — not CDN subdomains like byspotify.com)
+    if "open.spotify.com" in lower:
         # Best-effort: get show title from og:title, then iTunes search
         og = _scrape_og_title(url)
         if not og:
