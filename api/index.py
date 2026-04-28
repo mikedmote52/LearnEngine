@@ -260,35 +260,30 @@ def analyze_route():
     )
 
     # ---- Pass 1: Sonnet — concept synthesis + fact-check (hard reasoning) ----
+    # Lean output: keep explanations under 40 words; nothing longer than necessary.
+    # Quiz body comes from Pass 2 (Haiku) so we don't duplicate work here.
     pass1_prompt = (
         learner_section + "\n\n"
-        "Analyze the cached transcript above for DEEP UNDERSTANDING. "
-        "Respond with JSON only (no markdown fencing):\n\n"
+        "Analyze the cached transcript above. Respond with COMPACT JSON only "
+        "(no markdown fencing, no prose before/after):\n\n"
         "{\n"
-        '  "summary": "3-5 sentence summary",\n'
+        '  "summary": "3-4 sentence summary",\n'
         '  "key_concepts": [\n'
-        '    {"id":"concept_1","name":"Short name","explanation":"Clear explanation",'
-        '"simple_analogy":"Everyday analogy","topic":"Category",'
-        '"importance":"high/medium/low",'
-        '"common_misconception":"What learners typically get wrong",'
-        '"deeper_insight":"Beyond what the video states"}\n'
+        '    {"id":"slug","name":"Short name","explanation":"Under 30 words",'
+        '"topic":"Category","importance":"high|medium|low"}\n'
         "  ],\n"
         '  "fact_check": [\n'
-        '    {"claim":"Specific claim","assessment":"accurate/partially_accurate/inaccurate/unverifiable",'
-        '"correction":"If inaccurate, null if accurate.","reasoning":"Why"}\n'
+        '    {"claim":"specific claim","assessment":"accurate|partially_accurate|inaccurate|unverifiable",'
+        '"correction":"only if inaccurate, else null"}\n'
         "  ],\n"
-        '  "misinformation_flags": [\n'
-        '    {"statement":"...","issue":"...","severity":"high/medium/low"}\n'
-        "  ],\n"
-        '  "bias_notes": "Notable biases or missing context",\n'
-        '  "difficulty_level": "beginner/intermediate/advanced",\n'
-        '  "learning_objectives": ["By the end you should be able to..."]\n'
+        '  "misinformation_flags": [],\n'
+        '  "difficulty_level": "beginner|intermediate|advanced",\n'
+        '  "learning_objectives": ["By the end..."]\n'
         "}\n\n"
         "RULES:\n"
-        "- 6-12 key_concepts covering the substantive content\n"
-        "- Fact-check ALL claims, dates, statistics. Be specific.\n"
-        "- common_misconception is the actual cognitive error learners make on this concept\n"
-        "- deeper_insight goes beyond the transcript with related context"
+        "- 5-8 key_concepts. Keep each explanation under 30 words.\n"
+        "- Fact-check 3-6 specific claims (dates, statistics, named entities).\n"
+        "- Keep total output under 1500 tokens. Be terse."
     )
 
     # ---- Pass 2: Haiku — quiz batch (bulk formatting straight from transcript) ----
@@ -325,10 +320,10 @@ def analyze_route():
     )
 
     def run_pass1():
-        return call_llm(pass1_prompt, model=SONNET, max_tokens=2500, cached_context=cached_transcript)
+        return call_llm(pass1_prompt, model=SONNET, max_tokens=2000, cached_context=cached_transcript)
 
     def run_pass2():
-        return call_llm(pass2_prompt, model=HAIKU, max_tokens=7000, cached_context=cached_transcript)
+        return call_llm(pass2_prompt, model=HAIKU, max_tokens=6500, cached_context=cached_transcript)
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
