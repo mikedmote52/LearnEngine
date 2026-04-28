@@ -1208,9 +1208,21 @@ init();
 """
 
 if __name__ == "__main__":
+    # Production-safe defaults: loopback only, debug OFF, Werkzeug debugger and
+    # auto-reloader explicitly disabled. Set FLASK_ENV=production to make it
+    # explicit; LEARNENGINE_DEBUG=true is required to enable debug locally.
+    os.environ.setdefault("FLASK_ENV", "production")
+
     host = os.environ.get("LEARNENGINE_HOST", "127.0.0.1")
     port = int(os.environ.get("LEARNENGINE_PORT", "5050"))
     debug = os.environ.get("LEARNENGINE_DEBUG", "false").lower() == "true"
-    print(f"\n  LearnEngine starting...")
+
+    # Hard-rail: refuse debug if listening on a non-loopback interface.
+    if debug and host not in ("127.0.0.1", "localhost", "::1"):
+        print("Refusing to enable debug on non-loopback host:", host)
+        debug = False
+
+    app.debug = debug
+    print(f"\n  LearnEngine starting (debug={debug}, host={host}, port={port})")
     print(f"  Open http://{host}:{port} in your browser\n")
-    app.run(host=host, port=port, debug=debug)
+    app.run(host=host, port=port, debug=debug, use_reloader=debug, use_debugger=debug)

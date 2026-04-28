@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>LearnEngine</title>
+<!-- API proxy URL: GH Pages calls Vercel; Vercel deploy uses same-origin.
+     Update the content= value below to your Vercel deployment URL. -->
+<meta name="learnengine-api-base" content="https://learnengine-proxy.vercel.app">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🧠</text></svg>">
 <style>
 :root{--bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a25;--border:#2a2a3a;--text:#e0e0e8;--text-muted:#8888a0;--accent:#6366f1;--accent-glow:rgba(99,102,241,.15);--green:#22c55e;--red:#ef4444;--yellow:#eab308;--orange:#f97316;--cyan:#06b6d4;--radius:12px}
@@ -20,7 +23,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .nav .settings-btn{font-size:16px;padding:8px 10px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:14px}
 .card h2{font-size:17px;margin-bottom:14px;font-weight:600}
-input[type=text],input[type=password],textarea{width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;font-family:inherit}
+input[type=text],textarea{width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;font-family:inherit}
 input:focus,textarea:focus{outline:none;border-color:var(--accent)}
 textarea{min-height:100px;resize:vertical}
 label{display:block;font-size:13px;color:var(--text-muted);margin-bottom:6px}
@@ -50,46 +53,61 @@ label{display:block;font-size:13px;color:var(--text-muted);margin-bottom:6px}
 .option.selected{border-color:var(--accent);background:var(--accent-glow)}
 .option.correct{border-color:var(--green);background:rgba(34,197,94,.1)}
 .option.incorrect{border-color:var(--red);background:rgba(239,68,68,.1)}
-.badge{display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:50%;background:var(--surface2);font-weight:600;font-size:11px;margin-right:8px}
-.hint-box{margin-top:8px;padding:10px;background:rgba(99,102,241,.08);border-radius:8px;border:1px dashed var(--accent);font-size:13px;color:var(--accent);cursor:pointer}
-.explanation{margin-top:10px;padding:14px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:14px;line-height:1.6}
-.explanation .deeper{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);color:var(--cyan);font-style:italic}
-.explanation .misconception{margin-top:8px;padding:8px 10px;background:rgba(239,68,68,.05);border-radius:6px;border-left:3px solid var(--orange);font-size:13px;color:var(--text-muted)}
-.score-display{text-align:center;padding:28px}
-.score-big{font-size:56px;font-weight:800}
-.score-big.great{color:var(--green)}.score-big.okay{color:var(--yellow)}.score-big.needs-work{color:var(--orange)}.score-big.struggling{color:var(--red)}
-.progress-bar{width:100%;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
-.progress-fill{height:100%;background:var(--accent);border-radius:3px;transition:width .3s}
-.teaching-banner{padding:14px;background:rgba(6,182,212,.08);border:1px solid var(--cyan);border-radius:8px;margin-bottom:14px;font-size:14px}
-.teaching-banner strong{color:var(--cyan)}
-.topic-pill{display:inline-block;padding:3px 9px;border-radius:12px;font-size:11px;margin:2px;border:1px solid var(--border)}
-.topic-weak{border-color:var(--red);color:var(--red)}
-.topic-strong{border-color:var(--green);color:var(--green)}
-.fact-item{padding:10px;border-radius:8px;margin-bottom:6px;border-left:3px solid;font-size:14px}
-.fact-accurate{border-color:var(--green);background:rgba(34,197,94,.05)}
-.fact-partially_accurate{border-color:var(--yellow);background:rgba(234,179,8,.05)}
-.fact-inaccurate{border-color:var(--red);background:rgba(239,68,68,.05)}
-.fact-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase}
-.video-item{display:flex;justify-content:space-between;align-items:center;padding:14px;background:var(--surface2);border-radius:8px;margin-bottom:8px;border:1px solid var(--border);gap:10px}
-.spinner{display:inline-block;width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+.badge{display:inline-block;background:var(--surface);color:var(--text-muted);padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600;margin-right:7px}
+.progress-bar{height:5px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:6px}
+.progress-fill{height:100%;background:var(--accent);transition:width .3s}
+.score-display{text-align:center;padding:32px}
+.score-big{font-size:62px;font-weight:800}
+.score-big.great{color:var(--green)}
+.score-big.okay{color:var(--yellow)}
+.score-big.needs-work{color:var(--orange)}
+.score-big.struggling{color:var(--red)}
+.explanation{background:var(--bg);border-left:3px solid var(--accent);padding:11px 14px;border-radius:6px;margin-top:12px;font-size:14px}
+.deeper{background:rgba(6,182,212,.06);border-left:3px solid var(--cyan);padding:8px 12px;border-radius:6px;margin-top:10px;font-size:13px;color:var(--text-muted)}
+.misconception{background:rgba(249,115,22,.06);border-left:3px solid var(--orange);padding:8px 12px;border-radius:6px;margin-top:10px;font-size:13px;color:var(--text-muted)}
+.hint-box{background:rgba(99,102,241,.06);border:1px dashed var(--accent);padding:9px 12px;border-radius:6px;margin-top:9px;font-size:13px;color:var(--accent);cursor:pointer}
+.teaching-banner{background:rgba(249,115,22,.08);border:1px solid var(--orange);padding:11px 14px;border-radius:var(--radius);margin-bottom:14px;font-size:14px;color:var(--text)}
+.video-item{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--border)}
+.video-item:last-child{border-bottom:none}
+.spinner{display:inline-block;width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.loading{text-align:center;padding:40px}
+.topic-pill{display:inline-block;padding:3px 9px;border-radius:11px;font-size:12px;margin:2px}
+.topic-strong{background:rgba(34,197,94,.15);color:var(--green)}
+.topic-weak{background:rgba(239,68,68,.15);color:var(--red)}
+.fact-item{padding:9px 11px;border-radius:6px;margin-bottom:5px;font-size:13px;border:1px solid var(--border)}
+.fact-accurate{border-left:3px solid var(--green)}
+.fact-inaccurate{border-left:3px solid var(--red)}
+.fact-partially_accurate,.fact-unverifiable{border-left:3px solid var(--yellow)}
+.fact-badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase;margin-right:6px}
 .hidden{display:none}
-.key-status{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
-.key-ok{background:var(--green)}.key-missing{background:var(--red)}
-@media(max-width:600px){.app{padding:10px}.stats-grid{grid-template-columns:repeat(2,1fr)}.header{gap:8px}.nav button{padding:6px 10px;font-size:12px}.video-item{flex-direction:column;align-items:stretch;text-align:center}}
+.key-status{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.key-ok{background:var(--green)}
+.key-missing{background:var(--red)}
+.proxy-banner{background:rgba(99,102,241,.08);border:1px solid var(--accent);padding:9px 12px;border-radius:8px;margin-bottom:14px;font-size:12px;color:var(--text-muted)}
 </style>
 </head>
 <body>
-<div class="app" id="app"></div>
+<div id="app" class="app"></div>
+
 <script>
-// ==== HTML Escaping ====
+// ============ Config ============
+// API base: GH Pages reads from <meta>; Vercel deploy uses same-origin.
+function getApiBase(){
+  if(location.hostname==='mikedmote52.github.io'){
+    const m=document.querySelector('meta[name="learnengine-api-base"]');
+    return (m&&m.content)?m.content.replace(/\/$/,''):'';
+  }
+  // Same-origin (Vercel deployment, or local dev with proxy)
+  return '';
+}
+const API_BASE=getApiBase();
+
+// ============ HTML escape ============
 function E(s){if(s==null)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
-// ==== IndexedDB Learner Store ====
-const DB_NAME='LearnEngineDB';const DB_VER=3;
+// ============ IndexedDB ============
+const DB_NAME='LearnEngineDB';const DB_VER=4;
 let idb=null;
-
 function openDB(){
   return new Promise((resolve,reject)=>{
     const req=indexedDB.open(DB_NAME,DB_VER);
@@ -100,12 +118,13 @@ function openDB(){
       if(!db.objectStoreNames.contains('quizzes'))db.createObjectStore('quizzes',{keyPath:'id'});
       if(!db.objectStoreNames.contains('history'))db.createObjectStore('history',{keyPath:'id',autoIncrement:true});
       if(!db.objectStoreNames.contains('settings'))db.createObjectStore('settings',{keyPath:'id'});
+      // v4: embeddings store for similarity-based spaced repetition
+      if(!db.objectStoreNames.contains('embeddings'))db.createObjectStore('embeddings',{keyPath:'concept_id'});
     };
     req.onsuccess=e=>{idb=e.target.result;resolve(idb)};
     req.onerror=e=>reject(e);
   });
 }
-
 function dbGet(store,key){return new Promise((res,rej)=>{const tx=idb.transaction(store,'readonly');const r=tx.objectStore(store).get(key);r.onsuccess=()=>res(r.result);r.onerror=rej})}
 function dbPut(store,val){return new Promise((res,rej)=>{const tx=idb.transaction(store,'readwrite');const r=tx.objectStore(store).put(val);r.onsuccess=()=>res(r.result);r.onerror=rej})}
 function dbGetAll(store){return new Promise((res,rej)=>{const tx=idb.transaction(store,'readonly');const r=tx.objectStore(store).getAll();r.onsuccess=()=>res(r.result);r.onerror=rej})}
@@ -116,22 +135,7 @@ async function getProfile(){
   return p;
 }
 
-async function getApiKey(){
-  const s=await dbGet('settings','apikey');
-  return s?.value||'';
-}
-async function saveApiKey(key){
-  await dbPut('settings',{id:'apikey',value:key.trim()});
-}
-async function getModel(){
-  const s=await dbGet('settings','model');
-  return s?.value||'anthropic/claude-sonnet-4';
-}
-async function saveModel(model){
-  await dbPut('settings',{id:'model',value:model.trim()});
-}
-
-// ==== SM-2 Algorithm ====
+// ============ SM-2 ============
 function sm2Update(concept,quality){
   if(!concept.easiness){concept.easiness=2.5;concept.interval=1;concept.reps=0}
   if(quality>=3){
@@ -158,13 +162,54 @@ function getDueConcepts(profile){
   return due;
 }
 
+// ============ Embeddings + cosine similarity ============
+// Used to pick the most-similar prior concept when scheduling review variations,
+// avoiding the "ask the LLM if these are similar" anti-pattern.
+function cosineSim(a,b){
+  let dot=0,na=0,nb=0;
+  for(let i=0;i<a.length;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i]}
+  return dot/(Math.sqrt(na)*Math.sqrt(nb)+1e-9);
+}
+
+async function ensureEmbeddings(conceptIds,profile){
+  // Fetch embeddings for any concepts that don't have one yet (batched).
+  const missing=[];const inputs=[];
+  for(const cid of conceptIds){
+    const cached=await dbGet('embeddings',cid);
+    if(cached)continue;
+    const c=profile.concepts[cid];if(!c)continue;
+    missing.push(cid);
+    inputs.push((c.name||cid)+': '+(c.description||''));
+  }
+  if(!missing.length)return;
+  try{
+    const res=await fetch(API_BASE+'/api/embed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs})});
+    if(!res.ok)return;
+    const j=await res.json();
+    for(let i=0;i<missing.length;i++){
+      await dbPut('embeddings',{concept_id:missing[i],vector:j.embeddings[i],created_at:new Date().toISOString()});
+    }
+  }catch(e){/* embeddings are optional; spaced repetition still works without */}
+}
+
+async function similarConcepts(targetId,topK=5){
+  const target=await dbGet('embeddings',targetId);
+  if(!target)return[];
+  const all=await dbGetAll('embeddings');
+  return all
+    .filter(e=>e.concept_id!==targetId)
+    .map(e=>({concept_id:e.concept_id,score:cosineSim(target.vector,e.vector)}))
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,topK);
+}
+
+// ============ Result recording ============
 async function recordResult(quizId,answers,questions){
   if(!questions||!questions.length)return{score:0,correct:0,total:0,details:[],wrongAnswers:[],weakAreas:[],strongAreas:[],needsFollowup:false,learningStyle:{},dueForReview:0};
   const profile=await getProfile();
   let correct=0;const details=[];const wrong=[];
   questions.forEach((q,i)=>{
     const sel=answers[i];
-    // Normalize options: ensure labels exist
     const opts=(q.options||[]).map((o,idx)=>({...o,label:o.label||String.fromCharCode(65+idx)}));
     const rightOpt=opts.find(o=>o.correct);
     const selOpt=opts.find(o=>o.label===sel);
@@ -172,7 +217,6 @@ async function recordResult(quizId,answers,questions){
     if(isCorrect)correct++;
     else wrong.push({question:q.question,selected:sel,selectedText:selOpt?.text||'',correct:rightOpt?.label,correctText:rightOpt?.text||'',whyWrong:selOpt?.why_wrong||'',explanation:q.explanation||'',concept_id:q.concept_id,concept_name:q.concept_name,topic:q.topic});
     details.push({question:q.question,correct:isCorrect,selected:sel,selectedText:selOpt?.text||'',correctAnswer:rightOpt?.label,correctText:rightOpt?.text||'',whyWrong:(!isCorrect&&selOpt)?selOpt.why_wrong||'':'',explanation:q.explanation||'',deeperInsight:q.deeper_insight||'',misconception:q.common_misconception||'',concept_id:q.concept_id,concept_name:q.concept_name||'',topic:q.topic||'',bloom:q.bloom_level||''});
-    // Use concept_id or generate stable fallback
     const cid=q.concept_id||(q.concept_name?q.concept_name.toLowerCase().replace(/\s+/g,'_'):'q_'+i);
     const quality=isCorrect?4:1;
     if(!profile.concepts[cid])profile.concepts[cid]={topic:q.topic||'general',name:q.concept_name||cid,description:q.question.slice(0,200)};
@@ -192,7 +236,6 @@ async function recordResult(quizId,answers,questions){
     const t=profile.topics[topic];
     t.strength=.7*t.strength+.3*(s.c/s.t);t.count+=s.t;t.lastSeen=new Date().toISOString();
   }
-  // Weak/strong areas: relax threshold for first quiz (count>=1 instead of 2)
   const minCount=profile.totalQuizzes<=1?1:2;
   profile.weakAreas=Object.entries(profile.topics).filter(([,d])=>d.strength<.6&&d.count>=minCount).map(([t])=>t);
   profile.strongAreas=Object.entries(profile.topics).filter(([,d])=>d.strength>=.85&&d.count>=minCount).map(([t])=>t);
@@ -206,10 +249,14 @@ async function recordResult(quizId,answers,questions){
   await dbPut('profile',profile);
   await dbPut('history',{id:Date.now(),quizId,timestamp:new Date().toISOString(),score,total,correct});
 
+  // Fire-and-forget: compute embeddings for the concepts touched (used for review variation)
+  const touched=questions.map(q=>q.concept_id||(q.concept_name?q.concept_name.toLowerCase().replace(/\s+/g,'_'):'')).filter(Boolean);
+  ensureEmbeddings(touched,profile).catch(()=>{});
+
   return{score:Math.round(score*100*10)/10,correct,total,details,wrongAnswers:wrong,weakAreas:profile.weakAreas,strongAreas:profile.strongAreas,needsFollowup:score<.85,learningStyle:profile.learningStyle,dueForReview:getDueConcepts(profile).length};
 }
 
-// ==== YouTube Transcript (client-side) ====
+// ============ Transcript fetch (no key needed) ============
 function extractVideoId(url){
   const patterns=[/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,/(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,/^([a-zA-Z0-9_-]{11})$/];
   for(const p of patterns){const m=url.match(p);if(m)return m[1]}
@@ -217,312 +264,69 @@ function extractVideoId(url){
 }
 
 async function fetchTranscript(videoId){
-  // Method 0: Try local transcript proxy (runs on your Mac via transcript_proxy.py)
+  // 1) Local Mac proxy (fastest, no rate limits)
   try{
-    const r=await fetch(`http://localhost:8219/transcript?v=${videoId}`,{signal:AbortSignal.timeout(5000)});
+    const r=await fetch('http://localhost:8219/transcript?v='+videoId,{signal:AbortSignal.timeout(5000)});
     if(r.ok){const j=await r.json();if(j.full_text)return j.full_text}
-  }catch(e){/* local proxy not running, try other methods */}
+  }catch(e){}
 
-  // Method 1: Use YouTube's innertube API via CORS proxy to get player response
-  const proxies=['https://api.allorigins.win/raw?url=','https://api.codetabs.com/v1/proxy?quest='];
+  // 2) Vercel proxy /api/transcript (server-side youtube_transcript_api)
+  try{
+    const r=await fetch(API_BASE+'/api/transcript',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:'https://youtube.com/watch?v='+videoId}),signal:AbortSignal.timeout(20000)});
+    if(r.ok){const j=await r.json();if(j.full_text)return j.full_text}
+  }catch(e){}
 
-  // Try fetching the embed page (lighter, less bot detection)
-  const urls=[
-    'https://www.youtube.com/watch?v='+videoId,
-    'https://www.youtube.com/embed/'+videoId,
-    'https://m.youtube.com/watch?v='+videoId
-  ];
+  throw new Error('Could not fetch transcript automatically. Open the "Paste transcript manually" section below, go to the YouTube video, click "..." > "Show transcript", copy and paste here.');
+}
 
-  let html=null;
-  for(const proxy of proxies){
-    for(const pageUrl of urls){
-      try{
-        const r=await fetch(proxy+encodeURIComponent(pageUrl),{signal:AbortSignal.timeout(15000)});
-        if(r.ok){
-          const text=await r.text();
-          // Check if we got actual video page (not consent/error)
-          if(text.includes('captionTracks')||text.includes('captions')){html=text;break}
-        }
-      }catch(e){continue}
+// ============ Proxy API (key stays server-side) ============
+async function api(path,body,timeoutMs=120000){
+  const ctl=new AbortController();
+  const timer=setTimeout(()=>ctl.abort(),timeoutMs);
+  try{
+    const res=await fetch(API_BASE+path,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body||{}),
+      signal:ctl.signal,
+    });
+    clearTimeout(timer);
+    let data=null;
+    try{data=await res.json()}catch(e){}
+    if(!res.ok){
+      const msg=data?.error||('API '+res.status);
+      throw new Error(msg);
     }
-    if(html)break;
+    return data;
+  }catch(e){
+    clearTimeout(timer);
+    if(e.name==='AbortError')throw new Error('Request timed out. The proxy may be cold-starting; try again.');
+    throw e;
   }
-
-  if(html){
-    // Try multiple regex patterns to extract caption tracks
-    let tracks=null;
-    const patterns=[
-      /"captionTracks"\s*:\s*(\[.*?\])\s*[,}]/,
-      /captionTracks.*?(\[.*?"baseUrl".*?\])/s,
-      /"playerCaptionsTracklistRenderer".*?"captionTracks"\s*:\s*(\[[\s\S]*?\])\s*,/
-    ];
-    for(const pat of patterns){
-      const m=html.match(pat);
-      if(m){try{tracks=JSON.parse(m[1]);break}catch(e){}}
-    }
-
-    if(tracks&&tracks.length){
-      const enTrack=tracks.find(t=>t.languageCode==='en')||tracks.find(t=>t.languageCode?.startsWith('en'))||tracks[0];
-      if(enTrack?.baseUrl){
-        // Fetch caption XML
-        for(const proxy of proxies){
-          try{
-            const r=await fetch(proxy+encodeURIComponent(enTrack.baseUrl),{signal:AbortSignal.timeout(15000)});
-            if(r.ok){
-              const captionXml=await r.text();
-              const parser=new DOMParser();
-              const doc=parser.parseFromString(captionXml,'text/xml');
-              const texts=[...doc.querySelectorAll('text')].map(t=>{
-                let s=t.textContent||'';
-                s=s.replace(/&#39;/g,"'").replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/\n/g,' ');
-                return s.trim();
-              }).filter(Boolean);
-              if(texts.length)return texts.join(' ');
-            }
-          }catch(e){continue}
-        }
-      }
-    }
-  }
-
-  // Method 2: Try YouTube's timedtext API directly
-  const ttUrls=[
-    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=json3`,
-    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en`,
-  ];
-  for(const proxy of proxies){
-    for(const ttUrl of ttUrls){
-      try{
-        const r=await fetch(proxy+encodeURIComponent(ttUrl),{signal:AbortSignal.timeout(10000)});
-        if(r.ok){
-          const text=await r.text();
-          if(text.includes('"segs"')||text.includes('<text')){
-            // JSON format
-            try{
-              const j=JSON.parse(text);
-              const segs=[];
-              (j.events||[]).forEach(ev=>{(ev.segs||[]).forEach(s=>{if(s.utf8&&s.utf8.trim())segs.push(s.utf8.trim())})});
-              if(segs.length)return segs.join(' ');
-            }catch(e){}
-            // XML format
-            const parser=new DOMParser();
-            const doc=parser.parseFromString(text,'text/xml');
-            const texts=[...doc.querySelectorAll('text')].map(t=>t.textContent?.trim()).filter(Boolean);
-            if(texts.length)return texts.join(' ');
-          }
-        }
-      }catch(e){continue}
-    }
-  }
-
-  // Method 3: Try third-party transcript services
-  const thirdParty=[
-    `https://yt.lemnoslife.com/noKey/videos?part=transcript&id=${videoId}`,
-  ];
-  for(const url of thirdParty){
-    try{
-      const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
-      if(r.ok){
-        const j=await r.json();
-        const items=j?.items?.[0]?.transcript?.content;
-        if(items?.length){
-          return items.map(i=>i.text||'').filter(Boolean).join(' ');
-        }
-      }
-    }catch(e){continue}
-  }
-
-  throw new Error('Could not fetch transcript automatically. Open the "Paste transcript manually" section below, go to the YouTube video, click "..." > "Show transcript", copy the text, and paste it here.');
 }
 
-// ==== OpenRouter LLM (direct from browser) ====
-async function callLLM(prompt,maxTokens=12000){
-  const apiKey=await getApiKey();
-  if(!apiKey)throw new Error('No API key set. Tap the gear icon to add your OpenRouter key.');
-  const model=await getModel();
-  const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+apiKey,'HTTP-Referer':location.href,'X-Title':'LearnEngine'},
-    body:JSON.stringify({model,max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
-  });
-  if(!res.ok){
-    const err=await res.json().catch(()=>({}));
-    const msg=err?.error?.message||err?.error||'API error '+res.status;
-    throw new Error(typeof msg==='string'?msg:JSON.stringify(msg));
-  }
-  const data=await res.json();
-  return data.choices[0].message.content.trim();
-}
+// ============ State ============
+let S={view:'dashboard',videos:[],quizzes:[],currentQuiz:null,answers:{},results:null,processing:false,hints:{},profile:null,dueCount:0,serverOk:false,proxyUrl:''};
 
-function parseJSON(text){
-  text=text.trim();
-  // Strip markdown fences
-  if(text.startsWith('```')){text=text.slice(text.indexOf('\n')+1)}
-  if(text.endsWith('```'))text=text.slice(0,-3).trimEnd();
-  // Strip ```json or ``` at start
-  text=text.replace(/^```\w*\n?/,'').replace(/```$/,'').trim();
-  // Try direct parse first
-  try{return JSON.parse(text)}catch(e){}
-  // Extract outermost JSON object using brace counting
-  let start=-1,depth=0,end=-1;
-  for(let i=0;i<text.length;i++){
-    if(text[i]==='{'){if(start===-1)start=i;depth++}
-    else if(text[i]==='}'){depth--;if(depth===0&&start!==-1){end=i+1;break}}
-  }
-  if(start>=0&&end>start){
-    let jsonStr=text.slice(start,end);
-    try{return JSON.parse(jsonStr)}catch(e){}
-    // Try fixing trailing commas (common LLM mistake)
-    jsonStr=jsonStr.replace(/,\s*([\]}])/g,'$1');
-    try{return JSON.parse(jsonStr)}catch(e){}
-  }
-  throw new Error('Could not parse AI response as JSON. Try again.');
-}
-
-// ==== Prompts ====
-function analyzePrompt(title,transcript,learnerCtx){
-  let learnerSection='';
-  if(learnerCtx){
-    const mode=learnerCtx.learning_style?.teachingMode||'scaffolded';
-    const weak=learnerCtx.weak_areas||[];
-    const acc=learnerCtx.overall_accuracy||50;
-    learnerSection=`\nLEARNER PROFILE:\n- Accuracy: ${acc}%, Mode: ${mode}, Weak: ${weak.length?weak.join(', '):'None'}\n- If foundational: simpler language, analogies. If scaffolded: sequential questions. If challenging: synthesis questions.`;
-  }
-  return `You are an expert educational content designer. Analyze this transcript for DEEP UNDERSTANDING.
-
-VIDEO TITLE: ${title}
-${learnerSection}
-TRANSCRIPT:
-${transcript.slice(0,80000)}
-
-Respond with JSON only (no markdown fencing):
-
-{
-  "summary": "3-5 sentence summary",
-  "key_concepts": [
-    {"id": "concept_1", "name": "Short name", "explanation": "Clear explanation", "simple_analogy": "Everyday analogy", "topic": "Category", "importance": "high/medium/low"}
-  ],
-  "fact_check": [
-    {"claim": "Specific claim", "assessment": "accurate/partially_accurate/inaccurate/unverifiable", "correction": "If inaccurate, null if accurate.", "reasoning": "Why"}
-  ],
-  "misinformation_flags": [
-    {"statement": "...", "issue": "...", "severity": "high/medium/low"}
-  ],
-  "bias_notes": "Notable biases or missing context",
-  "difficulty_level": "beginner/intermediate/advanced",
-  "learning_objectives": ["By the end you should be able to..."],
-  "quiz": [
-    {
-      "question": "Clear question testing understanding",
-      "concept_id": "which concept", "concept_name": "readable name", "topic": "topic area",
-      "difficulty": "easy/medium/hard", "bloom_level": "remember/understand/apply/analyze/evaluate",
-      "options": [
-        {"label": "A", "text": "...", "correct": false, "why_wrong": "..."},
-        {"label": "B", "text": "...", "correct": true, "why_wrong": null},
-        {"label": "C", "text": "...", "correct": false, "why_wrong": "..."},
-        {"label": "D", "text": "...", "correct": false, "why_wrong": "..."}
-      ],
-      "explanation": "Why correct answer is correct",
-      "common_misconception": "Most common mistake",
-      "deeper_insight": "Beyond the video",
-      "hint": "Nudge without revealing"
-    }
-  ]
-}
-
-RULES:
-- 10-15 questions covering ALL key concepts
-- Bloom's: 20% remember, 30% understand, 25% apply, 15% analyze, 10% evaluate
-- Wrong options = REAL misconceptions, not obviously wrong
-- Fact-check ALL claims, dates, statistics
-- Every hint guides thinking, doesn't reveal answer
-- CRITICAL: Every correct answer MUST be verifiable directly from the transcript. Do NOT generate questions whose correct answer relies on information not present in the transcript.
-- Double-check that exactly ONE option per question has "correct": true
-- why_wrong for each incorrect option must clearly explain WHY it is wrong, referencing the transcript
-- explanation field must be a thorough 2-3 sentence teaching moment, not just "This is correct because..."
-- If the transcript contains errors or debatable claims, note this in fact_check and avoid testing those claims as if they are settled facts`;
-}
-
-function followupPrompt(wrongAnswers,weakConcepts,transcript,learnerCtx){
-  let styleCtx='';
-  if(learnerCtx){
-    const mode=learnerCtx.learning_style?.teachingMode||'scaffolded';
-    styleCtx=`\nLEARNER MODE: ${mode}`;
-  }
-  const txSection=transcript?`\nTRANSCRIPT (use as source of truth for answers):\n${transcript.slice(0,40000)}`:`\nNo transcript available. Base questions on the concept information provided in WRONG ANSWERS.`;
-  return `You are an adaptive tutor. A learner struggled. TEACH through questions, don't just retest.
-
-STRUGGLED WITH: ${JSON.stringify(weakConcepts)}
-WRONG ANSWERS: ${JSON.stringify(wrongAnswers)}
-${styleCtx}
-${txSection}
-
-Generate 6-10 TEACHING questions. JSON only:
-{
-  "diagnosis": "Misconception pattern detected",
-  "teaching_strategy": "How this fixes the misunderstanding",
-  "focus_areas": ["concepts retested"],
-  "quiz": [
-    {
-      "question": "...", "concept_id": "...", "concept_name": "...", "topic": "...",
-      "difficulty": "easy/medium/hard", "bloom_level": "remember/understand/apply/analyze",
-      "scaffold_note": "How this builds understanding",
-      "teaching_moment": "Key insight",
-      "options": [
-        {"label": "A", "text": "...", "correct": false, "why_wrong": "..."},
-        {"label": "B", "text": "...", "correct": true, "why_wrong": null},
-        {"label": "C", "text": "...", "correct": false, "why_wrong": "..."},
-        {"label": "D", "text": "...", "correct": false, "why_wrong": "..."}
-      ],
-      "explanation": "Rich explanation with analogy",
-      "deeper_insight": "Additional context",
-      "hint": "Thinking prompt"
-    }
-  ]
-}
-Sequence: Q1-2 prerequisites (easy), Q3-5 build (medium), Q6-8 apply (hard), Q9-10 synthesize`;
-}
-
-function reviewPrompt(dueConcepts){
-  return `Generate a spaced repetition review quiz. Test from DIFFERENT ANGLES than before.
-Low mastery = easier. High mastery = harder.
-
-CONCEPTS DUE: ${JSON.stringify(dueConcepts.slice(0,15))}
-
-JSON only:
-{
-  "focus_areas": ["topics"],
-  "quiz": [
-    {
-      "question": "...", "concept_id": "...", "concept_name": "...", "topic": "...",
-      "difficulty": "easy/medium/hard", "bloom_level": "...",
-      "options": [
-        {"label": "A", "text": "...", "correct": false, "why_wrong": "..."},
-        {"label": "B", "text": "...", "correct": true, "why_wrong": null},
-        {"label": "C", "text": "...", "correct": false, "why_wrong": "..."},
-        {"label": "D", "text": "...", "correct": false, "why_wrong": "..."}
-      ],
-      "explanation": "...", "deeper_insight": "...", "hint": "..."
-    }
-  ]
-}`;
-}
-
-// ==== State ====
-let S={view:'dashboard',videos:[],quizzes:[],currentQuiz:null,answers:{},results:null,processing:false,hints:{},profile:null,dueCount:0,hasKey:false};
-
-// ==== Init ====
+// ============ Init ============
 async function init(){
   await openDB();
   S.profile=await getProfile();
   S.videos=await dbGetAll('videos');
   S.quizzes=await dbGetAll('quizzes');
   S.dueCount=getDueConcepts(S.profile).length;
-  S.hasKey=!!(await getApiKey());
+  S.proxyUrl=API_BASE||location.origin;
+  try{
+    const h=await api('/api/health',{},10000).catch(async()=>{
+      const r=await fetch(API_BASE+'/api/health');return r.json();
+    });
+    S.serverOk=!!h?.has_api_key;
+    S.modelInfo=h?.models||null;
+  }catch(e){S.serverOk=false}
   render();
 }
 
-// ==== Render ====
+// ============ Render ============
 function render(){
   document.getElementById('app').innerHTML=renderHeader()+(
     S.view==='dashboard'?renderDashboard():
@@ -540,7 +344,7 @@ function renderHeader(){
     <button class="${S.view==='process'?'active':''}" onclick="nav('process')">+ New Video</button>
     <button class="${S.view==='history'?'active':''}" onclick="nav('history')">History</button>
     ${S.dueCount>0?`<button class="review-btn" onclick="startReview()">Review (${S.dueCount})</button>`:''}
-    <button class="settings-btn ${S.view==='settings'?'active':''}" onclick="nav('settings')"><span class="key-status ${S.hasKey?'key-ok':'key-missing'}"></span>Settings</button></div></div>`;
+    <button class="settings-btn ${S.view==='settings'?'active':''}" onclick="nav('settings')"><span class="key-status ${S.serverOk?'key-ok':'key-missing'}"></span>Settings</button></div></div>`;
 }
 
 function renderDashboard(){
@@ -567,9 +371,9 @@ function renderDashboard(){
     <p style="color:var(--text-muted);margin-bottom:12px">${S.dueCount} concept${S.dueCount>1?'s':''} due for spaced repetition review.</p>
     <button class="btn btn-orange" onclick="startReview()">Start Review</button></div>`;
 
-  if(!S.hasKey)html+=`<div class="card" style="border-color:var(--yellow)"><h2>Setup Required</h2>
-    <p style="color:var(--text-muted);margin-bottom:12px">Add your OpenRouter API key in Settings to enable AI-powered quizzes.</p>
-    <button class="btn btn-primary btn-sm" onclick="nav('settings')">Open Settings</button></div>`;
+  if(!S.serverOk)html+=`<div class="card" style="border-color:var(--yellow)"><h2>Backend Offline</h2>
+    <p style="color:var(--text-muted);margin-bottom:12px">The LearnEngine proxy at ${E(S.proxyUrl)} is unreachable or has no API key configured. Quizzes and analysis won't work until the proxy is healthy.</p>
+    <button class="btn btn-secondary btn-sm" onclick="nav('settings')">Diagnose</button></div>`;
 
   if((p.weakAreas||[]).length)html+=`<div class="card"><h2>Focus Areas</h2><div>${p.weakAreas.map(a=>`<span class="topic-pill topic-weak">${E(a)}</span>`).join('')}</div></div>`;
   if((p.strongAreas||[]).length)html+=`<div class="card"><h2>Strengths</h2><div>${p.strongAreas.map(a=>`<span class="topic-pill topic-strong">${E(a)}</span>`).join('')}</div></div>`;
@@ -587,19 +391,19 @@ function renderDashboard(){
 
 function renderProcess(){
   let html='';
-  if(!S.hasKey){
+  if(!S.serverOk){
     html+=`<div class="card" style="border-color:var(--yellow);text-align:center;padding:24px">
-      <h2 style="color:var(--yellow);margin-bottom:8px">API Key Required</h2>
-      <p style="color:var(--text-muted);margin-bottom:14px;font-size:14px">You need an OpenRouter API key to analyze videos and generate quizzes. It takes 30 seconds to set up.</p>
-      <button class="btn btn-primary" onclick="nav('settings')">Open Settings</button></div>`;
+      <h2 style="color:var(--yellow);margin-bottom:8px">Backend Unreachable</h2>
+      <p style="color:var(--text-muted);margin-bottom:14px;font-size:14px">The LearnEngine API proxy isn't responding. Check the deployment status before processing a video.</p>
+      <button class="btn btn-secondary btn-sm" onclick="nav('settings')">Diagnose</button></div>`;
   }
   html+=`<div class="card"><h2>Process a Video</h2>
-    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px">Paste a YouTube URL below. LearnEngine will fetch the transcript, analyze the content, fact-check claims, and generate an adaptive quiz.</p>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px">Paste a YouTube URL. LearnEngine fetches the transcript, analyzes it via the Vercel proxy (key never touches the browser), fact-checks claims, and generates an adaptive quiz.</p>
     <div class="input-group"><label>YouTube URL</label><input type="text" id="vidUrl" placeholder="https://www.youtube.com/watch?v=..."></div>
     <div class="input-group"><label>Title (optional)</label><input type="text" id="vidTitle" placeholder="Video title"></div>
     <details style="margin-bottom:14px"><summary style="cursor:pointer;color:var(--text-muted);font-size:13px">Paste transcript manually (if auto-fetch fails)</summary>
     <div class="input-group" style="margin-top:10px"><label>Transcript text</label><textarea id="manualTx" placeholder="Go to the YouTube video > click '...' > 'Show transcript' > copy and paste here"></textarea></div></details>
-    <button class="btn btn-primary" id="processBtn" onclick="processVideo()" ${S.processing||!S.hasKey?'disabled':''}>
+    <button class="btn btn-primary" id="processBtn" onclick="processVideo()" ${S.processing||!S.serverOk?'disabled':''}>
     ${S.processing?'<span class="spinner" style="width:16px;height:16px;border-width:2px;vertical-align:middle;margin-right:8px"></span>Processing... (30-60s)':'Analyze & Generate Quiz'}</button>
     <div id="processErr" style="color:var(--red);margin-top:10px;font-size:14px"></div>
     <div id="processStatus" style="color:var(--text-muted);margin-top:8px;font-size:13px"></div></div>`;
@@ -607,15 +411,15 @@ function renderProcess(){
 }
 
 function renderSettings(){
+  const m=S.modelInfo||{};
   return`<div class="card"><h2>Settings</h2>
-    <div class="input-group"><label>OpenRouter API Key</label>
-    <input type="password" id="apiKeyInput" placeholder="sk-or-v1-..." value="">
-    <p style="font-size:12px;color:var(--text-muted);margin-top:6px">Get your key at <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent)">openrouter.ai/keys</a>. Your key is stored only in this browser.</p></div>
-    <div class="input-group"><label>Model</label>
-    <input type="text" id="modelInput" placeholder="anthropic/claude-sonnet-4" value="">
-    <p style="font-size:12px;color:var(--text-muted);margin-top:6px">Default: anthropic/claude-sonnet-4. See <a href="https://openrouter.ai/models" target="_blank" style="color:var(--accent)">available models</a>.</p></div>
-    <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-    <span id="settingsSaved" style="color:var(--green);margin-left:12px;font-size:14px"></span>
+    <div class="proxy-banner">API key is held server-side at <code>${E(S.proxyUrl)}</code>. The browser never sees it.</div>
+    <div class="input-group"><label>Backend status</label>
+    <p style="font-size:13px;color:${S.serverOk?'var(--green)':'var(--red)'}">${S.serverOk?'Online — API key configured':'Offline — proxy unreachable or missing OPENROUTER_API_KEY env var'}</p></div>
+    ${m.haiku?`<div class="input-group"><label>Model routing</label>
+      <p style="font-size:13px;color:var(--text-muted)">Bulk formatting → <code>${E(m.haiku)}</code></p>
+      <p style="font-size:13px;color:var(--text-muted)">Hard reasoning → <code>${E(m.sonnet)}</code></p>
+      <p style="font-size:13px;color:var(--text-muted)">Embeddings → <code>${E(m.embed)}</code></p></div>`:''}
     <hr style="border-color:var(--border);margin:24px 0">
     <h2 style="color:var(--red)">Danger Zone</h2>
     <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Reset all learning data. This cannot be undone.</p>
@@ -635,13 +439,12 @@ function renderQuiz(){
   if(q.diagnosis)html+=`<div class="teaching-banner"><strong>Adaptive Mode</strong><br>${E(q.diagnosis)}<br><em style="color:var(--text-muted)">${E(q.teaching_strategy||'')}</em></div>`;
 
   qs.forEach((qu,i)=>{
-    // Normalize labels if missing
     const opts=(qu.options||[]).map((o,idx)=>({...o,label:o.label||String.fromCharCode(65+idx)}));
     html+=`<div class="question-card" id="q${i}"><div class="q-num">Q${i+1}${qu.difficulty?' &middot; '+E(qu.difficulty):''}${qu.topic?' &middot; '+E(qu.topic):''}${qu.bloom_level?' &middot; '+E(qu.bloom_level):''}</div>
     <div class="q-text">${E(qu.question)}</div>
     ${qu.scaffold_note?`<p style="font-size:12px;color:var(--cyan);margin-bottom:10px;font-style:italic">${E(qu.scaffold_note)}</p>`:''}
-    <div>${opts.map(o=>`<button class="option ${S.answers[i]===o.label?'selected':''}" onclick="pick(${i},'${o.label.replace(/'/g,"\\'")}')"><span class="badge">${E(o.label)}</span>${E(o.text)}</button>`).join('')}</div>
-    ${qu.hint&&!S.hints[i]?`<div class="hint-box" onclick="showHint(${i})">Need a hint? Tap here.</div>`:''}
+    <div>${opts.map((o,oi)=>`<button class="option ${S.answers[i]===o.label?'selected':''}" data-q="${i}" data-label="${E(o.label)}" onclick="pick(this)"><span class="badge">${E(o.label)}</span>${E(o.text)}</button>`).join('')}</div>
+    ${qu.hint&&!S.hints[i]?`<div class="hint-box" data-q="${i}" onclick="showHint(this)">Need a hint? Tap here.</div>`:''}
     ${qu.hint&&S.hints[i]?`<div class="hint-box" style="cursor:default">${E(qu.hint)}</div>`:''}</div>`;
   });
 
@@ -662,7 +465,7 @@ function renderResults(){
 
   if(r.needsFollowup)html+=`<div class="card" style="border:2px solid var(--orange);background:rgba(249,115,22,.06);text-align:center;padding:24px">
     <h2 style="color:var(--orange);margin-bottom:8px">Adaptive Learning</h2>
-    <p style="color:var(--text-muted);margin-bottom:6px;font-size:14px">The follow-up analyzes your specific mistakes and creates teaching questions that build understanding step by step, starting with the foundations you need.</p>
+    <p style="color:var(--text-muted);margin-bottom:6px;font-size:14px">The follow-up analyzes your specific mistakes and creates teaching questions that build understanding step by step.</p>
     <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px">Missed ${r.total-r.correct} question${r.total-r.correct>1?'s':''} across ${(r.weakAreas||[]).length||'several'} topic area${(r.weakAreas||[]).length!==1?'s':''}.</p>
     <button class="btn btn-orange" style="font-size:16px;padding:14px 32px" onclick="requestFollowup()">Start Adaptive Follow-Up</button></div>`;
 
@@ -691,11 +494,11 @@ function renderHistory(){
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <div><div style="font-weight:500">${E(v.title||v.video_id)}</div>
       <div style="font-size:12px;color:var(--text-muted)">${v.processed_at?new Date(v.processed_at).toLocaleDateString():''} &middot; ${v.transcript?.word_count||'?'} words${fl.length?' &middot; <span style="color:var(--red)">'+fl.length+' flag'+(fl.length>1?'s':'')+'</span>':''}</div></div>
-      <div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" onclick="loadQuiz('${E(v.video_id)}')">Quiz</button><button class="btn btn-secondary btn-sm" onclick="document.getElementById('det-${E(v.video_id)}').classList.toggle('hidden')">Analysis</button></div></div>
+      <div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" onclick="loadQuiz('${E(v.video_id)}')">Quiz</button><button class="btn btn-secondary btn-sm" data-id="det-${E(v.video_id)}" onclick="toggleDetails(this)">Analysis</button></div></div>
       <div id="det-${E(v.video_id)}" class="hidden">
       ${v.analysis?.summary?`<p style="margin-bottom:12px;font-size:14px">${E(v.analysis.summary)}</p>`:''}
       ${v.analysis?.learning_objectives?.length?`<p style="font-size:13px;color:var(--text-muted);margin-bottom:8px"><strong>Objectives:</strong> ${v.analysis.learning_objectives.map(E).join('; ')}</p>`:''}
-      ${fc.length?`<h3 style="font-size:14px;margin:10px 0 6px;color:var(--text-muted)">Fact Check</h3>${fc.map(f=>`<div class="fact-item fact-${E(f.assessment)}"><span class="fact-badge" style="background:${f.assessment==='accurate'?'rgba(34,197,94,.15);color:var(--green)':f.assessment==='inaccurate'?'rgba(239,68,68,.15);color:var(--red)':'rgba(234,179,8,.15);color:var(--yellow)'}">${E((f.assessment||'').replace('_',' '))}</span> <strong>${E(f.claim)}</strong>${f.correction?`<br><span style="font-size:13px;color:var(--text-muted)">${E(f.correction)}</span>`:''}</div>`).join('')}`:''}
+      ${fc.length?`<h3 style="font-size:14px;margin:10px 0 6px;color:var(--text-muted)">Fact Check</h3>${fc.map(f=>`<div class="fact-item fact-${E(f.assessment)}"><span class="fact-badge">${E((f.assessment||'').replace('_',' '))}</span> <strong>${E(f.claim)}</strong>${f.correction?`<br><span style="font-size:13px;color:var(--text-muted)">${E(f.correction)}</span>`:''}</div>`).join('')}`:''}
       ${fl.length?`<h3 style="font-size:14px;margin:10px 0 6px;color:var(--text-muted)">Flags</h3>${fl.map(f=>`<div style="padding:8px;border-radius:6px;margin-bottom:4px;border-left:3px solid var(--red);background:rgba(239,68,68,.05);font-size:13px"><strong>${E(f.statement)}</strong><br><span style="color:var(--text-muted)">${E(f.issue)}</span></div>`).join('')}`:''}</div></div>`}).join('')}</div>`;
 
   html+=`<div class="card"><h2>Quizzes</h2>${!S.quizzes.length?'<p style="color:var(--text-muted)">None yet.</p>':''}
@@ -705,34 +508,30 @@ function renderHistory(){
   return html;
 }
 
-// ==== Actions ====
-function nav(v){S.view=v;S.hints={};if(v==='dashboard')init();else render();if(v==='settings')loadSettingsValues()}
-function pick(i,label){if(!label)return;S.answers[i]=label;const sy=window.scrollY;render();window.scrollTo(0,sy)}
-function showHint(i){S.hints[i]=true;const sy=window.scrollY;render();window.scrollTo(0,sy)}
-
-async function loadSettingsValues(){
-  setTimeout(async()=>{
-    const key=await getApiKey();const model=await getModel();
-    const ki=document.getElementById('apiKeyInput');if(ki&&key)ki.value=key;
-    const mi=document.getElementById('modelInput');if(mi)mi.value=model;
-  },50);
+// ============ Actions ============
+function nav(v){S.view=v;S.hints={};if(v==='dashboard')init();else render();}
+function pick(btn){
+  const i=parseInt(btn.dataset.q,10);const label=btn.dataset.label;
+  if(!label||isNaN(i))return;
+  S.answers[i]=label;const sy=window.scrollY;render();window.scrollTo(0,sy);
 }
-
-async function saveSettings(){
-  const key=document.getElementById('apiKeyInput')?.value||'';
-  const model=document.getElementById('modelInput')?.value||'anthropic/claude-sonnet-4';
-  await saveApiKey(key);await saveModel(model);
-  S.hasKey=!!key.trim();
-  const el=document.getElementById('settingsSaved');if(el){el.textContent='Saved!';setTimeout(()=>{if(el)el.textContent=''},2000)}
-  render();loadSettingsValues();
+function showHint(el){
+  const i=parseInt(el.dataset.q,10);if(isNaN(i))return;
+  S.hints[i]=true;const sy=window.scrollY;render();window.scrollTo(0,sy);
+}
+function toggleDetails(btn){
+  const id=btn.dataset.id;if(!id)return;
+  // Whitelist: id must match the pattern det-<videoId>
+  if(!/^det-[a-zA-Z0-9_-]{1,64}$/.test(id))return;
+  const el=document.getElementById(id);if(el)el.classList.toggle('hidden');
 }
 
 async function resetAllData(){
-  const stores=['profile','videos','quizzes','history'];
+  const stores=['profile','videos','quizzes','history','embeddings'];
   for(const s of stores){
-    await new Promise((res,rej)=>{const tx=idb.transaction(s,'readwrite');tx.objectStore(s).clear();tx.oncomplete=res;tx.onerror=rej});
+    try{await new Promise((res,rej)=>{const tx=idb.transaction(s,'readwrite');tx.objectStore(s).clear();tx.oncomplete=res;tx.onerror=rej})}catch(e){}
   }
-  S={view:'dashboard',videos:[],quizzes:[],currentQuiz:null,answers:{},results:null,processing:false,hints:{},profile:null,dueCount:0,hasKey:S.hasKey};
+  S={view:'dashboard',videos:[],quizzes:[],currentQuiz:null,answers:{},results:null,processing:false,hints:{},profile:null,dueCount:0,serverOk:S.serverOk,proxyUrl:S.proxyUrl,modelInfo:S.modelInfo};
   await init();
 }
 
@@ -750,14 +549,14 @@ async function processVideo(){
   try{
     let transcript,videoId;
     if(manual){
-      transcript=manual;videoId=url?extractVideoId(url):'manual';
+      transcript=manual;videoId=url?extractVideoId(url):'manual_'+Date.now().toString(36);
       setStatus('Using pasted transcript...');
     }else{
       videoId=extractVideoId(url);
       setStatus('Fetching transcript from YouTube...');
       try{
         transcript=await fetchTranscript(videoId);
-        setStatus('Transcript fetched! Analyzing with AI...');
+        setStatus('Transcript fetched! Analyzing...');
       }catch(e){
         S.processing=false;render();
         setError(e.message);
@@ -767,7 +566,7 @@ async function processVideo(){
 
     if(!transcript||transcript.length<50){S.processing=false;render();setError('Transcript too short (need at least 50 characters)');return}
 
-    setStatus('Analyzing with AI... this takes 30-60 seconds');
+    setStatus('Analyzing via proxy (Sonnet, 30-60s)...');
 
     const profile=await getProfile();
     const learnerCtx={
@@ -777,22 +576,16 @@ async function processVideo(){
       overall_accuracy:Math.round((profile.accuracy||.5)*100),
     };
 
-    const text=await callLLM(analyzePrompt(title||'Video',transcript,learnerCtx),12000);
-    const analysis=parseJSON(text);
+    const analysis=await api('/api/analyze',{transcript,title:title||'Video',learner_context:learnerCtx});
 
-    // Validate quiz: ensure each question has options with exactly one correct
+    if(analysis.error)throw new Error(analysis.error);
+
     if(analysis.quiz&&analysis.quiz.length){
       analysis.quiz=analysis.quiz.filter(q=>{
         if(!q.question||!q.options||!q.options.length)return false;
         const correctCount=q.options.filter(o=>o.correct).length;
-        if(correctCount!==1){
-          // Fix: if no correct answer marked, skip the question
-          if(correctCount===0)return false;
-          // If multiple correct, keep only first
-          let found=false;
-          q.options.forEach(o=>{if(o.correct&&found)o.correct=false;if(o.correct)found=true});
-        }
-        // Ensure labels exist
+        if(correctCount===0)return false;
+        if(correctCount>1){let found=false;q.options.forEach(o=>{if(o.correct&&found)o.correct=false;if(o.correct)found=true})}
         q.options.forEach((o,idx)=>{if(!o.label)o.label=String.fromCharCode(65+idx)});
         return true;
       });
@@ -834,16 +627,14 @@ async function requestFollowup(){
     const profile=await getProfile();
     const video=await dbGet('videos',q.video_id);
     const transcript=video?.transcript?.full_text||'';
-    // Deduplicate wrong concepts
     const weakConceptIds=[...new Set(r.wrongAnswers.map(w=>w.concept_id).filter(Boolean))];
-    const weakConcepts=r.wrongAnswers.filter((w,i,arr)=>arr.findIndex(x=>x.concept_id===w.concept_id)===i);
-    const text=await callLLM(followupPrompt(
-      r.wrongAnswers,
-      weakConceptIds,
+    const result=await api('/api/followup',{
+      wrong_answers:r.wrongAnswers,
+      weak_concepts:weakConceptIds,
       transcript,
-      {learning_style:profile.learningStyle||{},weak_areas:profile.weakAreas||[],overall_accuracy:Math.round((profile.accuracy||.5)*100)}
-    ),10000);
-    const result=parseJSON(text);
+      learner_context:{learning_style:profile.learningStyle||{},weak_areas:profile.weakAreas||[],overall_accuracy:Math.round((profile.accuracy||.5)*100)}
+    });
+    if(result.error)throw new Error(result.error);
     if(!result.quiz||!result.quiz.length)throw new Error('Follow-up generated no questions. Try again.');
     const followup={id:Date.now().toString(36),video_id:q.video_id,video_title:q.video_title,quiz_type:'followup',questions:result.quiz,focus_areas:result.focus_areas||[],diagnosis:result.diagnosis||'',teaching_strategy:result.teaching_strategy||'',created_at:new Date().toISOString()};
     await dbPut('quizzes',followup);
@@ -856,10 +647,26 @@ async function startReview(){
   S.processing=true;render();
   try{
     const profile=await getProfile();
-    const due=getDueConcepts(profile).slice(0,15).map(c=>({id:c.id,name:c.name,topic:c.topic,mastery:Math.round((c.mastery||0)*100)+'%',tested:c.tested}));
-    if(!due.length){S.processing=false;render();alert('No concepts due for review right now.');return}
-    const text=await callLLM(reviewPrompt(due),8000);
-    const result=parseJSON(text);
+    let dueRaw=getDueConcepts(profile);
+    if(!dueRaw.length){S.processing=false;render();alert('No concepts due for review right now.');return}
+
+    // Embeddings-aware ordering: pull the lowest-mastery seed, then expand to top-similar
+    // concepts so the review pack tests related ideas, not random ones.
+    await ensureEmbeddings(dueRaw.map(c=>c.id),profile).catch(()=>{});
+    const seed=dueRaw.slice().sort((a,b)=>(a.mastery||0)-(b.mastery||0))[0];
+    let ordered=dueRaw;
+    if(seed){
+      const sims=await similarConcepts(seed.id,15).catch(()=>[]);
+      const simMap=Object.fromEntries(sims.map(s=>[s.concept_id,s.score]));
+      ordered=dueRaw.slice().sort((a,b)=>{
+        if(a.id===seed.id)return -1;if(b.id===seed.id)return 1;
+        return (simMap[b.id]||0)-(simMap[a.id]||0);
+      });
+    }
+    const due=ordered.slice(0,15).map(c=>({id:c.id,name:c.name,topic:c.topic,mastery:Math.round((c.mastery||0)*100)+'%',tested:c.tested}));
+
+    const result=await api('/api/review',{due_concepts:due});
+    if(result.error)throw new Error(result.error);
     if(!result.quiz||!result.quiz.length){S.processing=false;render();alert('Review generated no questions. Try again.');return}
     const review={id:Date.now().toString(36),video_id:'review',video_title:'Spaced Review',quiz_type:'review',questions:result.quiz,focus_areas:result.focus_areas||[],created_at:new Date().toISOString()};
     await dbPut('quizzes',review);
@@ -882,4 +689,3 @@ init();
 </script>
 </body>
 </html>
-<!-- GitHub Pages deploy -->
