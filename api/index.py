@@ -55,6 +55,16 @@ try:
 except ImportError:
     HAS_YTT = False
 
+# ---- Gemini (direct video understanding via OpenRouter) ----
+GEMINI_FLASH = os.environ.get("LEARNENGINE_MODEL_GEMINI_FLASH", "google/gemini-2.5-flash")
+GEMINI_PRO = os.environ.get("LEARNENGINE_MODEL_GEMINI_PRO", "google/gemini-2.5-pro")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")  # optional direct-Google fallback
+
+# In-memory cache keyed by YouTube video ID. Lives for the function lifetime
+# (Vercel may recycle). Best-effort speedup for repeat analyses.
+_YT_CACHE = {}
+_YT_CACHE_MAX = 32
+
 
 # ============== CORS ==============
 
@@ -218,6 +228,120 @@ def fetch_transcript_route():
         }), 400
 
 
+# ============== Gemini direct-video helper ==============
+# YouTube blocks Vercel's outbound IPs from transcript scraping, but Gemini
+# accesses YouTube via Google's own infrastructure when the URL is passed as
+# multimodal input — sidesteps the IP block entirely.
+
+def _gemini_youtube_call(prompt, youtube_url, model, max_tokens=12000, timeout=55):
+    """Call OpenRouter -> Gemini with a YouTube URL as multimodal input.
+    Tries two payload shapes (Google-native file/file_data, then OpenAI-style
+    video_url) and returns (text, format_used, model_used) on first success.
+    Raises RuntimeError with all attempt errors joined if every shape fails.
+    """
+    if not OPENROUTER_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY not set in environment")
+
+    formats = [
+        ("file", [
+            {"type": "text", "text": prompt},
+            {"type": "file", "file": {"file_data": youtube_url, "mime_type": "video/youtube"}},
+        ]),
+        ("video_url", [
+            {"type": "text", "text": prompt},
+            {"type": "video_url", "video_url": {"url": youtube_url}},
+        ]),
+    ]
+
+    errors = []
+    for fmt_name, content in formats:
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": content}],
+        }
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + OPENROUTER_KEY,
+                "HTTP-Referer": "https://mikedmote52.github.io/LearnEngine/",
+                "X-Title": "LearnEngine",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                msg = data.get("choices", [{}])[0].get("message", {})
+                content_out = msg.get("content", "")
+                if isinstance(content_out, list):
+                    content_out = "".join(
+                        p.get("text", "") for p in content_out if isinstance(p, dict)
+                    )
+                content_out = (content_out or "").strip()
+                if not content_out:
+                    errors.append(model + "/" + fmt_name + ": empty content")
+                    continue
+                return content_out, fmt_name, model
+        except urllib.error.HTTPError as e:
+            err_body = (e.read().decode() if e.fp else str(e))[:600]
+            errors.append(model + "/" + fmt_name + ": HTTP " + str(e.code) + ": " + err_body)
+            continue
+        except urllib.error.URLError as e:
+            errors.append(model + "/" + fmt_name + ": URL " + str(e))
+            continue
+        except Exception as e:
+            errors.append(model + "/" + fmt_name + ": " + type(e).__name__ + ": " + str(e))
+            continue
+    raise RuntimeError("; ".join(errors) or "all formats failed")
+
+
+def _gemini_direct_call(prompt, youtube_url, model_id, timeout=55):
+    """Direct Google Generative Language API fallback (no OpenRouter).
+    Only used if both OpenRouter formats fail on both Gemini models AND a
+    GEMINI_API_KEY env var is configured."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not configured for direct fallback")
+    # Strip "google/" prefix for direct API
+    short_id = model_id.split("/", 1)[-1]
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        + short_id + ":generateContent?key=" + GEMINI_API_KEY
+    )
+    payload = {
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"file_data": {"file_uri": youtube_url, "mime_type": "video/youtube"}},
+                {"text": prompt},
+            ],
+        }],
+        "generationConfig": {"maxOutputTokens": 12000, "temperature": 0.4},
+    }
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            cands = data.get("candidates") or []
+            if not cands:
+                raise RuntimeError("Direct Gemini: no candidates returned")
+            parts = cands[0].get("content", {}).get("parts", [])
+            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+            if not text.strip():
+                raise RuntimeError("Direct Gemini: empty text")
+            return text.strip(), "google_direct", model_id
+    except urllib.error.HTTPError as e:
+        err_body = (e.read().decode() if e.fp else str(e))[:600]
+        raise RuntimeError("Direct Gemini HTTP " + str(e.code) + ": " + err_body)
+
+
 # ---- Analysis: two-pass design ----
 # Pass 1 (Sonnet, small output ~2k tokens): summary, concepts, fact-check, objectives.
 #   Hard reasoning. Concept synthesis, difficulty calibration, fact-checking.
@@ -341,6 +465,216 @@ def analyze_route():
         return jsonify({"error": "Analysis failed: " + str(e)}), 500
 
     analysis["quiz"] = quiz_payload.get("quiz", [])
+    return jsonify(analysis)
+
+
+# ---- YouTube direct-video analysis (Gemini multimodal) ----
+# Replaces the broken transcript-scrape -> /api/analyze flow for YouTube URLs.
+# Gemini watches the video via Google's infrastructure and returns concepts,
+# fact-checks, and a quiz in a single call. The pasted-transcript flow at
+# /api/analyze remains as a manual fallback.
+
+@app.route("/api/analyze-youtube", methods=["POST"])
+def analyze_youtube_route():
+    data = request.get_json(silent=True) or {}
+    youtube_url = (data.get("youtube_url") or data.get("url") or "").strip()
+    options = data.get("options") or {}
+
+    if not youtube_url:
+        return jsonify({"error": "youtube_url is required"}), 400
+
+    try:
+        video_id = extract_video_id(youtube_url)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    canonical_url = "https://www.youtube.com/watch?v=" + video_id
+
+    # In-memory cache hit
+    if video_id in _YT_CACHE:
+        cached = dict(_YT_CACHE[video_id])
+        cached["cached"] = True
+        return jsonify(cached)
+
+    learner_context = options.get("learner_context") or {}
+    title_hint = (options.get("title") or "").strip()
+
+    learner_section = ""
+    if learner_context:
+        style = learner_context.get("learning_style") or {}
+        teaching_mode = style.get("teaching_mode", "scaffolded")
+        weak = learner_context.get("weak_areas") or []
+        accuracy = learner_context.get("overall_accuracy", 50)
+        learner_section = (
+            "\nLEARNER PROFILE:\n"
+            "- Accuracy: " + str(accuracy) + "%, Mode: " + teaching_mode + ", "
+            "Weak: " + (", ".join(weak) if weak else "None") + "\n"
+            "- foundational: simpler language, analogies. "
+            "scaffolded: sequential questions. "
+            "challenging: synthesis questions.\n"
+        )
+
+    prompt = (
+        "You are an expert educational content designer. Watch the YouTube video "
+        "provided as input, understand its substantive content (concepts, claims, "
+        "arguments, examples, evidence), and produce a structured learning analysis."
+        + learner_section
+        + ("\nVIDEO TITLE HINT: " + title_hint + "\n" if title_hint else "")
+        + "\n"
+        "Respond with COMPACT JSON only — no markdown fences, no prose before/after.\n\n"
+        "{\n"
+        '  "summary": "3-4 sentence summary of the video content",\n'
+        '  "title": "Best inferred title (or hint if provided)",\n'
+        '  "key_concepts": [\n'
+        '    {"id":"slug","name":"Short name","explanation":"Under 30 words",'
+        '"topic":"Category","importance":"high|medium|low"}\n'
+        "  ],\n"
+        '  "fact_check": [\n'
+        '    {"claim":"specific verifiable claim from the video",'
+        '"assessment":"accurate|partially_accurate|inaccurate|unverifiable",'
+        '"correction":"only if inaccurate, else null"}\n'
+        "  ],\n"
+        '  "misinformation_flags": [],\n'
+        '  "difficulty_level": "beginner|intermediate|advanced",\n'
+        '  "difficulty_score": 5,\n'
+        '  "learning_objectives": ["By the end the learner will..."],\n'
+        '  "quiz": [\n'
+        '    {"question":"Clear question testing real understanding",'
+        '"concept_id":"slug","concept_name":"name","topic":"topic",'
+        '"difficulty":"easy|medium|hard","bloom_level":"remember|understand|apply|analyze|evaluate",'
+        '"options":['
+        '{"label":"A","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"B","text":"...","correct":true,"why_wrong":null},'
+        '{"label":"C","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"D","text":"...","correct":false,"why_wrong":"..."}'
+        '],'
+        '"explanation":"Why correct (2-3 sentences)",'
+        '"common_misconception":"Most common mistake",'
+        '"deeper_insight":"Beyond the video","hint":"Nudge without revealing"}\n'
+        "  ]\n"
+        "}\n\n"
+        "RULES:\n"
+        "- 5-8 key_concepts. Each explanation under 30 words.\n"
+        "- 3-6 fact_check items: specific dates, statistics, named entities, causal claims.\n"
+        "- 8-12 quiz questions covering the substantive content. Mix Bloom levels: "
+        "20% remember, 30% understand, 25% apply, 15% analyze, 10% evaluate.\n"
+        "- Wrong options must be REAL misconceptions, never obviously wrong.\n"
+        "- Exactly ONE option per question has \"correct\": true.\n"
+        "- Every correct answer must be verifiable from the video content.\n"
+        "- difficulty_score is an integer 1-10 matching difficulty_level.\n"
+        "- Output JSON only — no markdown, no prose, no commentary."
+    )
+
+    text = None
+    fmt_used = None
+    model_used = None
+    errors = []
+
+    # Try OpenRouter -> gemini-2.5-flash, then -> gemini-2.5-pro
+    for model in (GEMINI_FLASH, GEMINI_PRO):
+        try:
+            text, fmt_used, model_used = _gemini_youtube_call(
+                prompt, canonical_url, model=model, max_tokens=12000, timeout=55
+            )
+            break
+        except Exception as e:
+            errors.append(str(e))
+            continue
+
+    # Direct Google Gemini API fallback (only if GEMINI_API_KEY is configured)
+    if not text and GEMINI_API_KEY:
+        for model in (GEMINI_FLASH, GEMINI_PRO):
+            try:
+                text, fmt_used, model_used = _gemini_direct_call(
+                    prompt, canonical_url, model_id=model, timeout=55
+                )
+                break
+            except Exception as e:
+                errors.append(str(e))
+                continue
+
+    if not text:
+        return jsonify({
+            "error": "Gemini video analysis failed across all model+format combinations.",
+            "details": errors,
+            "video_id": video_id,
+        }), 502
+
+    try:
+        analysis = parse_json_response(text)
+    except json.JSONDecodeError as e:
+        return jsonify({
+            "error": "Gemini returned non-JSON output: " + str(e),
+            "raw_excerpt": text[:1500],
+            "video_id": video_id,
+            "model_used": model_used,
+        }), 500
+
+    # Sanitize quiz: keep only well-formed questions, ensure exactly one correct.
+    if isinstance(analysis.get("quiz"), list):
+        cleaned = []
+        for q in analysis["quiz"]:
+            if not isinstance(q, dict):
+                continue
+            opts = q.get("options") or []
+            if not q.get("question") or not opts:
+                continue
+            correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
+            if correct_count == 0:
+                continue
+            if correct_count > 1:
+                found = False
+                for o in opts:
+                    if isinstance(o, dict) and o.get("correct"):
+                        if found:
+                            o["correct"] = False
+                        else:
+                            found = True
+            for idx, o in enumerate(opts):
+                if isinstance(o, dict) and not o.get("label"):
+                    o["label"] = chr(65 + idx)
+            cleaned.append(q)
+        analysis["quiz"] = cleaned
+
+    # Spec aliases (keeps the new endpoint compatible with both the existing
+    # client renderer and the spec's preferred field names).
+    analysis["concepts"] = analysis.get("key_concepts", [])
+    analysis["fact_checks"] = analysis.get("fact_check", [])
+    if "difficulty_score" not in analysis or not isinstance(analysis.get("difficulty_score"), (int, float)):
+        diff_map = {"beginner": 3, "intermediate": 6, "advanced": 9}
+        analysis["difficulty_score"] = diff_map.get(
+            (analysis.get("difficulty_level") or "intermediate").lower(), 5
+        )
+
+    quiz_questions = []
+    for q in analysis.get("quiz", []):
+        opts = q.get("options") or []
+        correct_idx = next(
+            (i for i, o in enumerate(opts) if isinstance(o, dict) and o.get("correct")),
+            0,
+        )
+        quiz_questions.append({
+            "stem": q.get("question", ""),
+            "options": [
+                (o.get("text", "") if isinstance(o, dict) else str(o)) for o in opts
+            ],
+            "correct_index": correct_idx,
+            "explanation": q.get("explanation", ""),
+        })
+    analysis["quiz_questions"] = quiz_questions
+
+    analysis["video_id"] = video_id
+    analysis["model_used"] = model_used
+    analysis["format_used"] = fmt_used
+
+    # LRU-ish cache eviction
+    if len(_YT_CACHE) >= _YT_CACHE_MAX:
+        try:
+            _YT_CACHE.pop(next(iter(_YT_CACHE)))
+        except StopIteration:
+            pass
+    _YT_CACHE[video_id] = analysis
+
     return jsonify(analysis)
 
 

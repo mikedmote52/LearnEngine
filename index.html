@@ -398,7 +398,7 @@ function renderProcess(){
       <button class="btn btn-secondary btn-sm" onclick="nav('settings')">Diagnose</button></div>`;
   }
   html+=`<div class="card"><h2>Process a Video</h2>
-    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px">Paste a YouTube URL. LearnEngine fetches the transcript, analyzes it via the Vercel proxy (key never touches the browser), fact-checks claims, and generates an adaptive quiz.</p>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px">Paste a YouTube URL. Gemini watches the video directly (via Google's own infrastructure) and returns concepts, fact-checks, and an adaptive quiz. The OpenRouter API key stays on the Vercel proxy and never touches your browser.</p>
     <div class="input-group"><label>YouTube URL</label><input type="text" id="vidUrl" placeholder="https://www.youtube.com/watch?v=..."></div>
     <div class="input-group"><label>Title (optional)</label><input type="text" id="vidTitle" placeholder="Video title"></div>
     <details style="margin-bottom:14px"><summary style="cursor:pointer;color:var(--text-muted);font-size:13px">Paste transcript manually (if auto-fetch fails)</summary>
@@ -547,27 +547,7 @@ async function processVideo(){
   S.processing=true;render();
 
   try{
-    let transcript,videoId;
-    if(manual){
-      transcript=manual;videoId=url?extractVideoId(url):'manual_'+Date.now().toString(36);
-      setStatus('Using pasted transcript...');
-    }else{
-      videoId=extractVideoId(url);
-      setStatus('Fetching transcript from YouTube...');
-      try{
-        transcript=await fetchTranscript(videoId);
-        setStatus('Transcript fetched! Analyzing...');
-      }catch(e){
-        S.processing=false;render();
-        setError(e.message);
-        return;
-      }
-    }
-
-    if(!transcript||transcript.length<50){S.processing=false;render();setError('Transcript too short (need at least 50 characters)');return}
-
-    setStatus('Analyzing via proxy (Sonnet, 30-60s)...');
-
+    let transcript='',videoId,analysis;
     const profile=await getProfile();
     const learnerCtx={
       learning_style:profile.learningStyle||{},
@@ -576,7 +556,34 @@ async function processVideo(){
       overall_accuracy:Math.round((profile.accuracy||.5)*100),
     };
 
-    const analysis=await api('/api/analyze',{transcript,title:title||'Video',learner_context:learnerCtx});
+    if(manual){
+      // Pasted-transcript path (kept as the safety net).
+      transcript=manual;videoId=url?extractVideoId(url):'manual_'+Date.now().toString(36);
+      setStatus('Using pasted transcript...');
+      if(!transcript||transcript.length<50){S.processing=false;render();setError('Transcript too short (need at least 50 characters)');return}
+      setStatus('Analyzing via proxy (Sonnet, 30-60s)...');
+      analysis=await api('/api/analyze',{transcript,title:title||'Video',learner_context:learnerCtx});
+    }else{
+      // YouTube URL path — Gemini watches the video directly via Google's
+      // infrastructure (sidesteps the YouTube IP block on Vercel egress).
+      videoId=extractVideoId(url);
+      setStatus('Analyzing video with Gemini (60-90s)...');
+      try{
+        analysis=await api('/api/analyze-youtube',{
+          youtube_url:url,
+          options:{title:title||'',learner_context:learnerCtx},
+        },120000);
+      }catch(e){
+        S.processing=false;render();
+        setError('Video analysis failed: '+e.message+'. As a fallback, expand "Paste transcript manually" below and paste the transcript yourself.');
+        return;
+      }
+      // Build a synthetic transcript blob from the analysis so the followup
+      // and review flows (which expect a stored transcript) keep working.
+      const concepts=(analysis.key_concepts||analysis.concepts||[]).map(c=>c.name+': '+(c.explanation||'')).join('\n');
+      const objectives=(analysis.learning_objectives||[]).join('\n');
+      transcript=[analysis.summary||'',objectives,concepts].filter(Boolean).join('\n\n');
+    }
 
     if(analysis.error)throw new Error(analysis.error);
 
