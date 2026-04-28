@@ -23,6 +23,7 @@ Stateless: all learner state lives client-side in IndexedDB.
 import json
 import os
 import re
+import concurrent.futures
 from flask import Flask, request, jsonify, make_response, Response
 import urllib.request
 import urllib.error
@@ -290,30 +291,18 @@ def analyze_route():
         "- deeper_insight goes beyond the transcript with related context"
     )
 
-    try:
-        analysis_text = call_llm(
-            pass1_prompt, model=SONNET, max_tokens=4000, cached_context=cached_transcript
-        )
-        analysis = parse_json_response(analysis_text)
-    except json.JSONDecodeError as e:
-        return jsonify({"error": "Failed to parse pass-1 analysis: " + str(e)}), 500
-    except Exception as e:
-        return jsonify({"error": "Pass 1 (analysis) failed: " + str(e)}), 500
-
-    # ---- Pass 2: Haiku — quiz batch (bulk formatting from concepts) ----
-    concepts = analysis.get("key_concepts") or []
-    difficulty = analysis.get("difficulty_level", "intermediate")
-
+    # ---- Pass 2: Haiku — quiz batch (bulk formatting straight from transcript) ----
+    # We run Pass 1 (Sonnet) and Pass 2 (Haiku) in parallel because Haiku doesn't
+    # need Pass 1's output — both consume the same cached transcript. Total wall time
+    # = max(pass1, pass2) instead of sum, comfortably under Vercel's 60s ceiling.
     pass2_prompt = (
         learner_section + "\n\n"
-        "Using the cached transcript above as ground truth and the concept list below, "
-        "generate a quiz of 10-15 questions in ONE batched response. JSON only:\n\n"
-        "CONCEPTS: " + json.dumps(concepts) + "\n"
-        "OVERALL DIFFICULTY: " + difficulty + "\n\n"
+        "Using the cached transcript above as ground truth, "
+        "generate a quiz of 10-12 questions in ONE batched response. JSON only:\n\n"
         "{\n"
         '  "quiz": [\n'
         '    {"question":"Clear question testing understanding",'
-        '"concept_id":"id from concept list","concept_name":"readable name","topic":"topic area",'
+        '"concept_id":"slug","concept_name":"readable name","topic":"topic area",'
         '"difficulty":"easy/medium/hard","bloom_level":"remember/understand/apply/analyze/evaluate",'
         '"options":['
         '{"label":"A","text":"...","correct":false,"why_wrong":"..."},'
@@ -327,23 +316,34 @@ def analyze_route():
         "  ]\n"
         "}\n\n"
         "RULES:\n"
-        "- 10-15 questions covering ALL key concepts\n"
+        "- 10-12 questions covering the substantive content\n"
         "- Bloom's: 20% remember, 30% understand, 25% apply, 15% analyze, 10% evaluate\n"
-        "- Wrong options = REAL misconceptions (use the common_misconception from the concept list)\n"
+        "- Wrong options = REAL misconceptions, not obviously wrong\n"
         "- Exactly ONE option per question has \"correct\": true\n"
-        "- Every correct answer MUST be verifiable directly from the transcript\n"
+        "- Every correct answer MUST be verifiable from the transcript\n"
         "- Every hint guides thinking, doesn't reveal the answer"
     )
 
+    def run_pass1():
+        return call_llm(pass1_prompt, model=SONNET, max_tokens=2500, cached_context=cached_transcript)
+
+    def run_pass2():
+        return call_llm(pass2_prompt, model=HAIKU, max_tokens=7000, cached_context=cached_transcript)
+
     try:
-        quiz_text = call_llm(
-            pass2_prompt, model=HAIKU, max_tokens=9000, cached_context=cached_transcript
-        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            f1 = ex.submit(run_pass1)
+            f2 = ex.submit(run_pass2)
+            analysis_text = f1.result(timeout=55)
+            quiz_text = f2.result(timeout=55)
+        analysis = parse_json_response(analysis_text)
         quiz_payload = parse_json_response(quiz_text)
+    except concurrent.futures.TimeoutError:
+        return jsonify({"error": "Analysis timed out (>55s)."}), 504
     except json.JSONDecodeError as e:
-        return jsonify({"error": "Failed to parse pass-2 quiz: " + str(e)}), 500
+        return jsonify({"error": "Failed to parse analysis JSON: " + str(e)}), 500
     except Exception as e:
-        return jsonify({"error": "Pass 2 (quiz) failed: " + str(e)}), 500
+        return jsonify({"error": "Analysis failed: " + str(e)}), 500
 
     analysis["quiz"] = quiz_payload.get("quiz", [])
     return jsonify(analysis)
