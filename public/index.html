@@ -102,6 +102,11 @@ function getApiBase(){
 }
 const API_BASE=getApiBase();
 
+// ============ Cold-start warmup (fire-and-forget) ============
+// Hits /api/health the moment the script parses so the Vercel function is
+// already warm by the time the user submits a video.
+try{fetch(API_BASE+'/api/health',{method:'GET',cache:'no-store'}).catch(()=>{})}catch(e){}
+
 // ============ HTML escape ============
 function E(s){if(s==null)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
@@ -280,7 +285,7 @@ async function fetchTranscript(videoId){
 }
 
 // ============ Proxy API (key stays server-side) ============
-async function api(path,body,timeoutMs=120000){
+async function api(path,body,timeoutMs=240000){
   const ctl=new AbortController();
   const timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{
@@ -316,13 +321,12 @@ async function init(){
   S.quizzes=await dbGetAll('quizzes');
   S.dueCount=getDueConcepts(S.profile).length;
   S.proxyUrl=API_BASE||location.origin;
-  try{
-    const h=await api('/api/health',{},10000).catch(async()=>{
-      const r=await fetch(API_BASE+'/api/health');return r.json();
-    });
-    S.serverOk=!!h?.has_api_key;
-    S.modelInfo=h?.models||null;
-  }catch(e){S.serverOk=false}
+  // Health check is fire-and-forget so cold-start latency never blocks render.
+  S.serverOk=false;
+  fetch(API_BASE+'/api/health',{cache:'no-store'}).then(r=>r.json()).then(h=>{
+    S.serverOk=!!h?.has_api_key;S.modelInfo=h?.models||null;
+    try{render()}catch(e){}
+  }).catch(()=>{});
   render();
 }
 
@@ -537,6 +541,13 @@ async function resetAllData(){
 
 function setStatus(msg){const el=document.getElementById('processStatus');if(el)el.textContent=msg}
 function setError(msg){const el=document.getElementById('processErr');if(el)el.textContent=msg}
+// Live elapsed counter for long-running analyses.
+function startElapsedCounter(prefix){
+  const start=Date.now();let stopped=false;
+  const tick=()=>{if(stopped)return;const s=Math.floor((Date.now()-start)/1000);setStatus(prefix+' '+s+'s')};
+  tick();const id=setInterval(tick,1000);
+  return ()=>{stopped=true;clearInterval(id)};
+}
 
 async function processVideo(){
   const url=document.getElementById('vidUrl')?.value?.trim();
@@ -567,15 +578,29 @@ async function processVideo(){
       // YouTube URL path — Gemini watches the video directly via Google's
       // infrastructure (sidesteps the YouTube IP block on Vercel egress).
       videoId=extractVideoId(url);
-      setStatus('Analyzing video with Gemini (60-90s)...');
-      try{
-        analysis=await api('/api/analyze-youtube',{
-          youtube_url:url,
-          options:{title:title||'',learner_context:learnerCtx},
-        },120000);
-      }catch(e){
+      let stopCounter=startElapsedCounter('Asking Gemini to watch the video... (typically 45-75s) ·');
+      // Auto-retry once on first failure: cold-start aborts and transient
+      // 5xx usually succeed on a second attempt against a now-warm function.
+      let attempt=0,lastErr=null;
+      while(attempt<2){
+        attempt++;
+        try{
+          analysis=await api('/api/analyze-youtube',{
+            youtube_url:url,
+            options:{title:title||'',learner_context:learnerCtx},
+          },240000);
+          lastErr=null;break;
+        }catch(e){
+          lastErr=e;
+          if(attempt>=2)break;
+          stopCounter&&stopCounter();
+          stopCounter=startElapsedCounter('First try hiccuped — retrying on a warm function... ·');
+        }
+      }
+      stopCounter&&stopCounter();
+      if(lastErr){
         S.processing=false;render();
-        setError('Video analysis failed: '+e.message+'. As a fallback, expand "Paste transcript manually" below and paste the transcript yourself.');
+        setError('Video analysis failed: '+lastErr.message+'. As a fallback, expand "Paste transcript manually" below and paste the transcript yourself.');
         return;
       }
       // Build a synthetic transcript blob from the analysis so the followup

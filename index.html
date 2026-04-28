@@ -544,6 +544,15 @@ function getApiBase() {
 const API_BASE = getApiBase();
 const APP_VERSION = 'v2.0';
 
+/* Cold-start warmup: fire-and-forget GET to /api/health the moment the script
+   parses, so the Vercel function is spinning up while the user types. By the
+   time they hit "Add to library," the function is already warm and the
+   analyze call doesn't pay the 5-15s cold-start tax. */
+try {
+  fetch(API_BASE + '/api/health', { method: 'GET', cache: 'no-store' })
+    .catch(() => { /* best effort, never throw */ });
+} catch (e) { /* noop */ }
+
 /* ============== 2. Helpers ============== */
 function E(s) {
   if (s == null) return '';
@@ -994,11 +1003,26 @@ function extractVideoId(url) {
   throw new Error('Could not find a YouTube video ID in that URL');
 }
 
+/* Live status counter for long-running analyses. Returns a stop function. */
+function startElapsedCounter(prefix) {
+  const start = Date.now();
+  let stopped = false;
+  const tick = () => {
+    if (stopped) return;
+    const s = Math.floor((Date.now() - start) / 1000);
+    setProcStatus(prefix + ' ' + s + 's');
+  };
+  tick();
+  const id = setInterval(tick, 1000);
+  return () => { stopped = true; clearInterval(id); };
+}
+
 async function processYoutube() {
   const url = (document.getElementById('srcUrl')?.value || '').trim();
   const manual = (document.getElementById('manualTx')?.value || '').trim();
   if (!url && !manual) { setProcErr('Enter a YouTube URL or paste a transcript'); return; }
   S.processing = true; render();
+  let stopCounter = null;
   try {
     const profile = await getProfile();
     const learnerCtx = { learning_style: {}, weak_areas: [], strong_areas: [], overall_accuracy: 50 };
@@ -1011,8 +1035,26 @@ async function processYoutube() {
     } else {
       const vid = extractVideoId(url);
       sourceId = 'yt_' + vid;
-      setProcStatus('Analyzing video with Gemini (60–90s)…');
-      analysis = await api('/api/analyze-youtube', { youtube_url: url, options: { learner_context: learnerCtx } }, 240000);
+      // Live counter shows elapsed seconds so the wait feels deliberate, not stuck.
+      stopCounter = startElapsedCounter('Asking Gemini to watch the video… (typically 45–75s) ·');
+      // Auto-retry once on first failure: cold-start aborts and transient
+      // 5xx usually succeed on a second attempt against a now-warm function.
+      let attempt = 0, lastErr = null;
+      while (attempt < 2) {
+        attempt++;
+        try {
+          analysis = await api('/api/analyze-youtube', { youtube_url: url, options: { learner_context: learnerCtx } }, 240000);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (attempt >= 2) break;
+          stopCounter && stopCounter();
+          stopCounter = startElapsedCounter('First try hiccuped — retrying on a warm function… ·');
+        }
+      }
+      if (lastErr) throw lastErr;
+      stopCounter && stopCounter(); stopCounter = null;
       title = analysis.title || ('Video ' + vid);
       const concepts = (analysis.key_concepts || analysis.concepts || []).map(c => c.name + ': ' + (c.explanation || '')).join('\n');
       transcript = [analysis.summary || '', (analysis.learning_objectives || []).join('\n'), concepts].filter(Boolean).join('\n\n');
@@ -1031,6 +1073,7 @@ async function processYoutube() {
     S.answers = {}; S.hints = {}; S.processing = false; S.results = null; S.promotedQuestionIdx = {};
     go('quiz');
   } catch (e) {
+    if (stopCounter) { try { stopCounter(); } catch (_) {} }
     S.processing = false; render(); setProcErr(e.message);
   }
 }
@@ -1950,12 +1993,14 @@ async function boot() {
   S.quizzes = await dbGetAll('quizzes');
   await loadCards();
   S.proxyUrl = API_BASE || location.origin;
-  // Health check
-  try {
-    const h = await apiGet('/api/health', 8000);
+  // Health check (non-blocking — UI renders immediately, status fills in
+  // when the warm-up ping resolves, even if cold-start takes 10-15s).
+  S.serverOk = false;
+  apiGet('/api/health', 20000).then(h => {
     S.serverOk = !!h?.has_api_key;
     S.modelInfo = h?.models || null;
-  } catch (e) { S.serverOk = false; }
+    try { render(); } catch (e) {}
+  }).catch(() => { /* ignore — first analyze call will surface real errors */ });
   // Default route: deep links
   const hash = location.hash.replace('#', '');
   if (hash === 'review' && S.dueCount > 0) {
