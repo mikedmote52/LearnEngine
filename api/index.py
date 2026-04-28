@@ -23,10 +23,15 @@ Stateless: all learner state lives client-side in IndexedDB.
 import json
 import os
 import re
+import base64
+import time
+import tempfile
 import concurrent.futures
+import xml.etree.ElementTree as ET
 from flask import Flask, request, jsonify, make_response, Response
 import urllib.request
 import urllib.error
+import urllib.parse
 
 app = Flask(__name__)
 
@@ -678,6 +683,651 @@ def analyze_youtube_route():
     _YT_CACHE[video_id] = analysis
 
     return jsonify(analysis)
+
+
+# ============== Podcast resolution + analysis (Phase A) ==============
+# Public-API path that doesn't require user accounts:
+#   1. Apple Podcasts URL  -> iTunes Search lookup -> RSS feed -> match episode -> MP3
+#   2. RSS feed URL        -> parse XML directly
+#   3. Direct MP3/M4A URL  -> use as-is
+#   4. Spotify show URL    -> scrape og:title, then iTunes search by show name -> RSS
+# Spotify-exclusive episodes return EXCLUSIVE_NO_RSS so the client can show a
+# helpful message rather than an opaque error.
+
+USER_AGENT = "Mozilla/5.0 LearnEngine/2.0"
+
+# In-memory caches (warm-instance only)
+_PODCAST_CACHE = {}
+_PODCAST_CACHE_MAX = 16
+
+
+def _http_get(url, headers=None, timeout=20, max_bytes=None):
+    """Simple HTTP GET with size cap. Returns bytes."""
+    req = urllib.request.Request(url, headers=headers or {"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if max_bytes:
+            data = resp.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise RuntimeError("Response exceeds max_bytes=" + str(max_bytes))
+            return data
+        return resp.read()
+
+
+def _itunes_lookup_by_id(podcast_id):
+    """Apple Podcasts ID -> feedUrl via iTunes Search API (no key needed)."""
+    url = "https://itunes.apple.com/lookup?id=" + str(podcast_id) + "&entity=podcast"
+    raw = _http_get(url, timeout=10)
+    data = json.loads(raw.decode("utf-8", errors="ignore"))
+    results = data.get("results") or []
+    if not results:
+        raise RuntimeError("iTunes lookup returned no results for id " + str(podcast_id))
+    return results[0]
+
+
+def _itunes_search_by_name(name, limit=5):
+    url = "https://itunes.apple.com/search?term=" + urllib.parse.quote(name) + "&entity=podcast&limit=" + str(limit)
+    raw = _http_get(url, timeout=10)
+    data = json.loads(raw.decode("utf-8", errors="ignore"))
+    return data.get("results") or []
+
+
+def _parse_apple_url(url):
+    """Apple Podcasts URL -> (podcast_id, episode_id_optional)."""
+    # Patterns:
+    #   https://podcasts.apple.com/us/podcast/show-name/id12345
+    #   https://podcasts.apple.com/us/podcast/show-name/id12345?i=67890
+    m = re.search(r"/id(\d+)", url)
+    pid = m.group(1) if m else None
+    m2 = re.search(r"[?&]i=(\d+)", url)
+    eid = m2.group(1) if m2 else None
+    return pid, eid
+
+
+def _fetch_rss(feed_url):
+    """Fetch RSS XML, returns ElementTree root."""
+    # 60 MB cap — Tim Ferriss is ~30 MB, large catalog feeds can exceed 25 MB.
+    raw = _http_get(feed_url, timeout=30, max_bytes=60_000_000)
+    # Some feeds have BOMs/declarations issues; let ET handle it
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError as e:
+        # Try to strip leading whitespace / BOM
+        text = raw.decode("utf-8", errors="ignore").lstrip("﻿").strip()
+        return ET.fromstring(text)
+
+
+def _rss_episodes(root):
+    """Yield episodes from an RSS root: list of dicts with title, audio_url, guid, pubDate."""
+    out = []
+    # iTunes namespace not strictly needed; <enclosure url="..."> is standard
+    for item in root.iter("item"):
+        title_el = item.find("title")
+        title = (title_el.text or "").strip() if title_el is not None else ""
+        guid_el = item.find("guid")
+        guid = (guid_el.text or "").strip() if guid_el is not None else ""
+        pub_el = item.find("pubDate")
+        pub = (pub_el.text or "").strip() if pub_el is not None else ""
+        enc = item.find("enclosure")
+        audio_url = enc.attrib.get("url") if (enc is not None) else None
+        if audio_url:
+            out.append({"title": title, "audio_url": audio_url, "guid": guid, "pubDate": pub})
+    return out
+
+
+def _scrape_og_title(url):
+    """Best-effort: pull og:title from the page (used for Spotify show pages)."""
+    try:
+        raw = _http_get(url, headers={"User-Agent": USER_AGENT}, timeout=10, max_bytes=300_000)
+        text = raw.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', text, flags=re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r'<title>([^<]+)</title>', text, flags=re.I)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def resolve_podcast(url):
+    """Resolve any podcast URL -> {feed_url, episode: {audio_url, title, guid}, show_title}.
+    Raises ValueError with code 'EXCLUSIVE_NO_RSS' for Spotify-exclusives or unresolvable links."""
+    url = (url or "").strip()
+    if not url:
+        raise ValueError("Empty URL")
+
+    lower = url.lower()
+
+    # Direct audio file
+    if lower.endswith(".mp3") or lower.endswith(".m4a") or lower.endswith(".wav") or lower.endswith(".ogg"):
+        return {"feed_url": None, "episode": {"audio_url": url, "title": url.rsplit("/", 1)[-1].split("?")[0], "guid": url}, "show_title": ""}
+
+    # RSS feed (heuristic: ends in xml/rss or contains /feed)
+    if lower.endswith(".xml") or lower.endswith(".rss") or "/rss" in lower or "/feed" in lower or "feeds." in lower:
+        try:
+            root = _fetch_rss(url)
+            eps = _rss_episodes(root)
+            if not eps:
+                raise RuntimeError("RSS feed has no episodes with audio enclosure")
+            chan = root.find("channel/title")
+            show = (chan.text or "") if chan is not None else ""
+            return {"feed_url": url, "episode": eps[0], "show_title": show.strip()}
+        except Exception as e:
+            raise ValueError("Could not parse RSS feed: " + str(e))
+
+    # Apple Podcasts
+    if "podcasts.apple.com" in lower:
+        pid, eid = _parse_apple_url(url)
+        if not pid:
+            raise ValueError("Apple Podcasts URL missing podcast id")
+        info = _itunes_lookup_by_id(pid)
+        feed = info.get("feedUrl")
+        show = info.get("collectionName") or info.get("trackName") or ""
+        if not feed:
+            raise ValueError("Apple Podcasts entry has no public feedUrl")
+        root = _fetch_rss(feed)
+        eps = _rss_episodes(root)
+        if not eps:
+            raise ValueError("Resolved RSS has no episodes")
+        # If we have an episode track id, try to match by title via iTunes lookup by track id
+        if eid:
+            try:
+                track_info = _itunes_lookup_by_id(eid)
+                track_name = (track_info.get("trackName") or "").strip().lower()
+                if track_name:
+                    match = next((e for e in eps if e["title"].strip().lower() == track_name), None)
+                    if match:
+                        return {"feed_url": feed, "episode": match, "show_title": show}
+            except Exception:
+                pass
+        return {"feed_url": feed, "episode": eps[0], "show_title": show}
+
+    # Spotify
+    if "spotify.com" in lower:
+        # Best-effort: get show title from og:title, then iTunes search
+        og = _scrape_og_title(url)
+        if not og:
+            raise ValueError({"code": "EXCLUSIVE_NO_RSS", "msg": "Spotify page is not publicly readable"})
+        # Strip Spotify-page suffixes ("| Podcast on Spotify", "- Listen on Spotify", etc.)
+        clean = re.sub(r"\s*[-|]\s*(Listen on Spotify|Podcast on Spotify|Spotify).*$", "", og, flags=re.I).strip()
+        clean = re.sub(r"\s+", " ", clean).strip()
+        # If this looks like an episode title vs show, try a few searches
+        candidates = _itunes_search_by_name(clean, limit=3)
+        for cand in candidates:
+            feed = cand.get("feedUrl")
+            if feed:
+                try:
+                    root = _fetch_rss(feed)
+                    eps = _rss_episodes(root)
+                    if eps:
+                        # Try to match episode by title fragment from og
+                        match = next((e for e in eps if clean.lower() in (e["title"] or "").lower()), eps[0])
+                        return {"feed_url": feed, "episode": match, "show_title": cand.get("collectionName") or clean}
+                except Exception:
+                    continue
+        raise ValueError({"code": "EXCLUSIVE_NO_RSS", "msg": "appears to be a Spotify exclusive — no public RSS feed found"})
+
+    # Default: try treating it as an RSS feed
+    try:
+        root = _fetch_rss(url)
+        eps = _rss_episodes(root)
+        if eps:
+            chan = root.find("channel/title")
+            show = (chan.text or "") if chan is not None else ""
+            return {"feed_url": url, "episode": eps[0], "show_title": show.strip()}
+    except Exception:
+        pass
+
+    raise ValueError({"code": "EXCLUSIVE_NO_RSS", "msg": "could not resolve podcast — paste an RSS feed or Apple Podcasts URL"})
+
+
+def _gemini_audio_call(prompt, audio_url, model, timeout=180, max_tokens=12000):
+    """Call OpenRouter -> Gemini with a remote audio URL.
+    Try direct URL first (fast, no download); fall back to base64 download if rejected.
+    Returns (text, format_used).
+    """
+    if not OPENROUTER_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    formats = [
+        ("file_url", [
+            {"type": "text", "text": prompt},
+            {"type": "file", "file": {"file_data": audio_url, "mime_type": "audio/mpeg"}},
+        ]),
+    ]
+
+    # Try the URL-passing format first
+    errors = []
+    for fmt_name, content in formats:
+        payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + OPENROUTER_KEY,
+                "HTTP-Referer": "https://mikedmote52.github.io/LearnEngine/",
+                "X-Title": "LearnEngine",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                msg = data.get("choices", [{}])[0].get("message", {})
+                text = msg.get("content", "")
+                if isinstance(text, list):
+                    text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+                text = (text or "").strip()
+                if text:
+                    return text, fmt_name
+                errors.append(fmt_name + ": empty content")
+        except urllib.error.HTTPError as e:
+            err_body = (e.read().decode() if e.fp else str(e))[:600]
+            errors.append(fmt_name + ": HTTP " + str(e.code) + ": " + err_body)
+        except Exception as e:
+            errors.append(fmt_name + ": " + type(e).__name__ + ": " + str(e))
+
+    # Fallback: download MP3, base64 it, send inline
+    try:
+        # Cap at ~25 MB MP3 (covers ~50 minutes at 64 kbps)
+        audio_bytes = _http_get(audio_url, headers={"User-Agent": USER_AGENT}, timeout=60, max_bytes=25_000_000)
+        b64 = base64.b64encode(audio_bytes).decode("ascii")
+        data_uri = "data:audio/mpeg;base64," + b64
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "file", "file": {"file_data": data_uri, "mime_type": "audio/mpeg"}},
+        ]
+        payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + OPENROUTER_KEY,
+                "HTTP-Referer": "https://mikedmote52.github.io/LearnEngine/",
+                "X-Title": "LearnEngine",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            msg = data.get("choices", [{}])[0].get("message", {})
+            text = msg.get("content", "")
+            if isinstance(text, list):
+                text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+            text = (text or "").strip()
+            if text:
+                return text, "base64_inline"
+            errors.append("base64_inline: empty content")
+    except urllib.error.HTTPError as e:
+        err_body = (e.read().decode() if e.fp else str(e))[:600]
+        errors.append("base64_inline: HTTP " + str(e.code) + ": " + err_body)
+    except Exception as e:
+        errors.append("base64_inline: " + type(e).__name__ + ": " + str(e))
+
+    raise RuntimeError("; ".join(errors) or "all audio paths failed")
+
+
+def _podcast_quiz_prompt(episode_title, show_title):
+    title_hint = (episode_title or "") + (" — " + show_title if show_title else "")
+    return (
+        "You are an expert educational content designer. Listen to the podcast audio "
+        "provided as input. Identify the substantive content (concepts, claims, "
+        "arguments, examples, evidence) and produce a structured learning analysis.\n\n"
+        + ("EPISODE: " + title_hint + "\n\n" if title_hint else "")
+        + "Respond with COMPACT JSON only — no markdown fences, no prose before/after.\n\n"
+        "{\n"
+        '  "summary": "3-4 sentence summary of the episode",\n'
+        '  "title": "Best inferred episode title",\n'
+        '  "key_concepts": [\n'
+        '    {"id":"slug","name":"Short name","explanation":"Under 30 words",'
+        '"topic":"Category","importance":"high|medium|low"}\n'
+        "  ],\n"
+        '  "fact_check": [\n'
+        '    {"claim":"specific verifiable claim from the episode",'
+        '"assessment":"accurate|partially_accurate|inaccurate|unverifiable",'
+        '"correction":"only if inaccurate, else null"}\n'
+        "  ],\n"
+        '  "misinformation_flags": [],\n'
+        '  "difficulty_level": "beginner|intermediate|advanced",\n'
+        '  "learning_objectives": ["By the end the listener will..."],\n'
+        '  "quiz": [\n'
+        '    {"question":"Clear question testing real understanding",'
+        '"concept_id":"slug","concept_name":"name","topic":"topic",'
+        '"difficulty":"easy|medium|hard","bloom_level":"remember|understand|apply|analyze|evaluate",'
+        '"options":['
+        '{"label":"A","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"B","text":"...","correct":true,"why_wrong":null},'
+        '{"label":"C","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"D","text":"...","correct":false,"why_wrong":"..."}'
+        '],'
+        '"explanation":"Why correct (2-3 sentences)",'
+        '"common_misconception":"Most common mistake",'
+        '"deeper_insight":"Beyond the episode","hint":"Nudge without revealing"}\n'
+        "  ]\n"
+        "}\n\n"
+        "RULES:\n"
+        "- 5-8 key_concepts, each explanation under 30 words.\n"
+        "- 3-6 fact_check items: dates, statistics, named entities, causal claims.\n"
+        "- 8-12 quiz questions covering substantive content. Mix Bloom levels.\n"
+        "- Wrong options must be REAL plausible misconceptions.\n"
+        "- Exactly ONE option per question has \"correct\": true.\n"
+        "- Output JSON only — no markdown, no prose, no commentary."
+    )
+
+
+@app.route("/api/analyze-podcast", methods=["POST"])
+def analyze_podcast_route():
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "url is required"}), 400
+
+    cache_key = url.split("?")[0][:200]
+    if cache_key in _PODCAST_CACHE:
+        cached = dict(_PODCAST_CACHE[cache_key])
+        cached["cached"] = True
+        return jsonify(cached)
+
+    try:
+        info = resolve_podcast(url)
+    except ValueError as ve:
+        payload = ve.args[0] if ve.args and isinstance(ve.args[0], dict) else None
+        if payload and payload.get("code") == "EXCLUSIVE_NO_RSS":
+            return jsonify({
+                "error": "podcast_not_resolvable",
+                "reason": payload.get("msg", "no public RSS feed found"),
+            }), 422
+        return jsonify({"error": "podcast_not_resolvable", "reason": str(ve)}), 422
+
+    episode = info["episode"]
+    show = info.get("show_title", "")
+    audio_url = episode["audio_url"]
+    prompt = _podcast_quiz_prompt(episode.get("title", ""), show)
+
+    text = None
+    fmt_used = None
+    model_used = None
+    errors = []
+    for model in (GEMINI_FLASH, GEMINI_PRO):
+        try:
+            text, fmt_used = _gemini_audio_call(prompt, audio_url, model=model, timeout=240)
+            model_used = model
+            break
+        except Exception as e:
+            errors.append(model + ": " + str(e))
+            continue
+
+    if not text:
+        return jsonify({
+            "error": "Audio analysis failed across all model attempts.",
+            "details": errors[:5],
+            "audio_url": audio_url,
+        }), 502
+
+    try:
+        analysis = parse_json_response(text)
+    except json.JSONDecodeError as e:
+        return jsonify({
+            "error": "Gemini returned non-JSON output: " + str(e),
+            "raw_excerpt": text[:1500],
+            "model_used": model_used,
+        }), 500
+
+    # Sanitize quiz the same way YouTube does
+    if isinstance(analysis.get("quiz"), list):
+        cleaned = []
+        for q in analysis["quiz"]:
+            if not isinstance(q, dict):
+                continue
+            opts = q.get("options") or []
+            if not q.get("question") or not opts:
+                continue
+            correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
+            if correct_count == 0:
+                continue
+            if correct_count > 1:
+                found = False
+                for o in opts:
+                    if isinstance(o, dict) and o.get("correct"):
+                        if found:
+                            o["correct"] = False
+                        else:
+                            found = True
+            for idx, o in enumerate(opts):
+                if isinstance(o, dict) and not o.get("label"):
+                    o["label"] = chr(65 + idx)
+            cleaned.append(q)
+        analysis["quiz"] = cleaned
+
+    analysis["concepts"] = analysis.get("key_concepts", [])
+    analysis["fact_checks"] = analysis.get("fact_check", [])
+    analysis["episode_id"] = re.sub(r"[^a-zA-Z0-9]+", "_", (episode.get("guid") or audio_url))[:48]
+    analysis["episode_title"] = analysis.get("title") or episode.get("title", "")
+    analysis["show_title"] = show
+    analysis["audio_url"] = audio_url
+    analysis["feed_url"] = info.get("feed_url")
+    analysis["model_used"] = model_used
+    analysis["format_used"] = fmt_used
+
+    if len(_PODCAST_CACHE) >= _PODCAST_CACHE_MAX:
+        try:
+            _PODCAST_CACHE.pop(next(iter(_PODCAST_CACHE)))
+        except StopIteration:
+            pass
+    _PODCAST_CACHE[cache_key] = analysis
+
+    return jsonify(analysis)
+
+
+# ============== Book chapter analysis (Phase B) ==============
+
+def _book_prompt(chapter_title):
+    title_line = ("\nCHAPTER TITLE: " + chapter_title + "\n") if chapter_title else "\n"
+    return (
+        "You are an expert educational content designer. The user has provided "
+        "photos of consecutive pages from a book chapter. Read the pages, identify "
+        "the substantive content (concepts, claims, arguments, equations, diagrams), "
+        "and produce a structured learning analysis."
+        + title_line + "\n"
+        "Respond with COMPACT JSON only — no markdown fences, no prose before/after.\n\n"
+        "{\n"
+        '  "summary": "3-4 sentence summary of the chapter content",\n'
+        '  "title": "Best inferred chapter title",\n'
+        '  "key_concepts": [\n'
+        '    {"id":"slug","name":"Short name","explanation":"Under 30 words",'
+        '"topic":"Category","importance":"high|medium|low"}\n'
+        "  ],\n"
+        '  "fact_check": [\n'
+        '    {"claim":"specific verifiable claim from the chapter",'
+        '"assessment":"accurate|partially_accurate|inaccurate|unverifiable",'
+        '"correction":"only if inaccurate, else null"}\n'
+        "  ],\n"
+        '  "difficulty_level": "beginner|intermediate|advanced",\n'
+        '  "learning_objectives": ["By the end the reader will..."],\n'
+        '  "quiz": [\n'
+        '    {"question":"Question that references the actual content of the pages",'
+        '"concept_id":"slug","concept_name":"name","topic":"topic",'
+        '"difficulty":"easy|medium|hard","bloom_level":"remember|understand|apply|analyze|evaluate",'
+        '"options":['
+        '{"label":"A","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"B","text":"...","correct":true,"why_wrong":null},'
+        '{"label":"C","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"D","text":"...","correct":false,"why_wrong":"..."}'
+        '],'
+        '"explanation":"Why correct (2-3 sentences)",'
+        '"common_misconception":"Most common mistake",'
+        '"deeper_insight":"Beyond the chapter","hint":"Nudge without revealing"}\n'
+        "  ]\n"
+        "}\n\n"
+        "RULES:\n"
+        "- 5-8 key_concepts, each explanation under 30 words.\n"
+        "- 3-6 fact_check items: dates, statistics, named entities, causal claims.\n"
+        "- 8-12 quiz questions that REFERENCE the actual chapter content.\n"
+        "- Wrong options must be plausible misconceptions, not obviously wrong.\n"
+        "- Exactly ONE option per question has \"correct\": true.\n"
+        "- Output JSON only — no markdown fences, no prose, no commentary."
+    )
+
+
+def _gemini_book_call(prompt, image_data_urls, model, timeout=240, max_tokens=12000):
+    """Call OpenRouter -> Gemini with multiple page images. Returns (text, format_used)."""
+    if not OPENROUTER_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    # Build content array: prompt first, then images.
+    # Use OpenAI-style image_url format which OpenRouter passes through.
+    content = [{"type": "text", "text": prompt}]
+    for du in image_data_urls:
+        if isinstance(du, str) and du.startswith("data:"):
+            content.append({"type": "image_url", "image_url": {"url": du}})
+        elif isinstance(du, str) and (du.startswith("http://") or du.startswith("https://")):
+            content.append({"type": "image_url", "image_url": {"url": du}})
+        else:
+            # Assume bare base64 string -> wrap as data URI (jpeg)
+            content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + du}})
+
+    payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + OPENROUTER_KEY,
+            "HTTP-Referer": "https://mikedmote52.github.io/LearnEngine/",
+            "X-Title": "LearnEngine",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            msg = data.get("choices", [{}])[0].get("message", {})
+            text = msg.get("content", "")
+            if isinstance(text, list):
+                text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+            text = (text or "").strip()
+            if not text:
+                raise RuntimeError("empty content")
+            return text, "image_url"
+    except urllib.error.HTTPError as e:
+        err_body = (e.read().decode() if e.fp else str(e))[:600]
+        raise RuntimeError("HTTP " + str(e.code) + ": " + err_body)
+
+
+@app.route("/api/analyze-book-chapter", methods=["POST"])
+def analyze_book_chapter_route():
+    data = request.get_json(silent=True) or {}
+    images = data.get("images") or []
+    chapter_title = (data.get("chapter_title") or "").strip()
+
+    if not isinstance(images, list) or not images:
+        return jsonify({"error": "images array is required"}), 400
+    if len(images) > 30:
+        return jsonify({"error": "max 30 images per request"}), 400
+
+    prompt = _book_prompt(chapter_title)
+
+    text = None
+    fmt_used = None
+    model_used = None
+    errors = []
+    for model in (GEMINI_FLASH, GEMINI_PRO):
+        try:
+            text, fmt_used = _gemini_book_call(prompt, images, model=model, timeout=240)
+            model_used = model
+            break
+        except Exception as e:
+            errors.append(model + ": " + str(e))
+            continue
+
+    if not text:
+        return jsonify({
+            "error": "Book chapter analysis failed across all model attempts.",
+            "details": errors[:5],
+        }), 502
+
+    try:
+        analysis = parse_json_response(text)
+    except json.JSONDecodeError as e:
+        return jsonify({
+            "error": "Gemini returned non-JSON output: " + str(e),
+            "raw_excerpt": text[:1500],
+            "model_used": model_used,
+        }), 500
+
+    # Sanitize quiz
+    if isinstance(analysis.get("quiz"), list):
+        cleaned = []
+        for q in analysis["quiz"]:
+            if not isinstance(q, dict):
+                continue
+            opts = q.get("options") or []
+            if not q.get("question") or not opts:
+                continue
+            correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
+            if correct_count == 0:
+                continue
+            if correct_count > 1:
+                found = False
+                for o in opts:
+                    if isinstance(o, dict) and o.get("correct"):
+                        if found:
+                            o["correct"] = False
+                        else:
+                            found = True
+            for idx, o in enumerate(opts):
+                if isinstance(o, dict) and not o.get("label"):
+                    o["label"] = chr(65 + idx)
+            cleaned.append(q)
+        analysis["quiz"] = cleaned
+
+    analysis["concepts"] = analysis.get("key_concepts", [])
+    analysis["fact_checks"] = analysis.get("fact_check", [])
+    analysis["chapter_title"] = chapter_title or analysis.get("title", "")
+    analysis["page_count"] = len(images)
+    analysis["model_used"] = model_used
+    analysis["format_used"] = fmt_used
+
+    return jsonify(analysis)
+
+
+# ============== Due-count sync (for Mac-side cron) ==============
+# Stores the most recently reported due count in /tmp on the warm function
+# instance. POST writes; GET reads. Used by the daily reminder script on
+# Mike's Mac to decide whether to fire an iMessage at 8 AM.
+
+_DUE_FILE = "/tmp/learnengine_due_count.json"
+
+
+@app.route("/api/sync-due-count", methods=["POST", "GET"])
+def sync_due_count_route():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        try:
+            count = int(data.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        ts = data.get("ts") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        client = (data.get("client") or "")[:32]
+        try:
+            with open(_DUE_FILE, "w") as f:
+                json.dump({"count": count, "ts": ts, "client": client, "stored_at": time.time()}, f)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": True, "count": count, "ts": ts})
+
+    # GET
+    try:
+        with open(_DUE_FILE, "r") as f:
+            payload = json.load(f)
+        return jsonify(payload)
+    except FileNotFoundError:
+        return jsonify({"count": 0, "ts": None, "client": None, "stored_at": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ---- Adaptive follow-up (Sonnet) ----
