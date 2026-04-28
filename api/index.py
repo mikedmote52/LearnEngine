@@ -570,11 +570,13 @@ def analyze_youtube_route():
     model_used = None
     errors = []
 
-    # Try OpenRouter -> gemini-2.5-flash, then -> gemini-2.5-pro
+    # Try OpenRouter -> gemini-2.5-flash, then -> gemini-2.5-pro.
+    # Long videos can need 90s+ so we allow generous per-call timeouts; the
+    # Vercel function maxDuration is set to 300s in vercel.json.
     for model in (GEMINI_FLASH, GEMINI_PRO):
         try:
             text, fmt_used, model_used = _gemini_youtube_call(
-                prompt, canonical_url, model=model, max_tokens=12000, timeout=55
+                prompt, canonical_url, model=model, max_tokens=12000, timeout=240
             )
             break
         except Exception as e:
@@ -586,7 +588,7 @@ def analyze_youtube_route():
         for model in (GEMINI_FLASH, GEMINI_PRO):
             try:
                 text, fmt_used, model_used = _gemini_direct_call(
-                    prompt, canonical_url, model_id=model, timeout=55
+                    prompt, canonical_url, model_id=model, timeout=240
                 )
                 break
             except Exception as e:
