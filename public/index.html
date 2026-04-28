@@ -467,7 +467,7 @@ function renderResults(){
     <h2 style="color:var(--orange);margin-bottom:8px">Adaptive Learning</h2>
     <p style="color:var(--text-muted);margin-bottom:6px;font-size:14px">The follow-up analyzes your specific mistakes and creates teaching questions that build understanding step by step.</p>
     <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px">Missed ${r.total-r.correct} question${r.total-r.correct>1?'s':''} across ${(r.weakAreas||[]).length||'several'} topic area${(r.weakAreas||[]).length!==1?'s':''}.</p>
-    <button class="btn btn-orange" style="font-size:16px;padding:14px 32px" onclick="requestFollowup()">Start Adaptive Follow-Up</button></div>`;
+    ${S.processing?`<button class="btn btn-orange" style="font-size:16px;padding:14px 32px" disabled><span class="spinner" style="width:16px;height:16px;border-width:2px;vertical-align:middle;margin-right:8px"></span>Building your follow-up... (30-60s)</button><p style="margin-top:12px;font-size:13px;color:var(--text-muted)">Sonnet 4.5 is reading your specific mistakes and designing teaching questions that build from the ground up.</p>`:`<button class="btn btn-orange" style="font-size:16px;padding:14px 32px" onclick="requestFollowup()">Start Adaptive Follow-Up</button>`}</div>`;
 
   if(r.weakAreas?.length)html+=`<div class="card"><h2>Areas to Strengthen</h2><div>${r.weakAreas.map(a=>`<span class="topic-pill topic-weak">${E(a)}</span>`).join('')}</div></div>`;
 
@@ -481,7 +481,7 @@ function renderResults(){
     ${d.misconception?`<div class="misconception"><strong>Common mistake:</strong> ${E(d.misconception)}</div>`:''}
     ${d.deeperInsight?`<div class="deeper"><strong>Going deeper:</strong> ${E(d.deeperInsight)}</div>`:''}</div></div>`).join('')}</div>`;
 
-  if(r.needsFollowup)html+=`<div style="text-align:center;padding:20px"><button class="btn btn-orange" style="font-size:15px;padding:12px 28px" onclick="requestFollowup()">Start Adaptive Follow-Up</button></div>`;
+  if(r.needsFollowup)html+=`<div style="text-align:center;padding:20px">${S.processing?`<button class="btn btn-orange" style="font-size:15px;padding:12px 28px" disabled><span class="spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:8px"></span>Building follow-up...</button>`:`<button class="btn btn-orange" style="font-size:15px;padding:12px 28px" onclick="requestFollowup()">Start Adaptive Follow-Up</button>`}</div>`;
   html+=`<div style="text-align:center;padding:${r.needsFollowup?'0':'20'}px 20px 20px"><button class="btn btn-secondary" onclick="nav('dashboard')">Back to Dashboard</button></div>`;
   return html;
 }
@@ -635,12 +635,23 @@ async function requestFollowup(){
     const video=await dbGet('videos',q.video_id);
     const transcript=video?.transcript?.full_text||'';
     const weakConceptIds=[...new Set(r.wrongAnswers.map(w=>w.concept_id).filter(Boolean))];
+    // Build extra context the server can use to ground the teaching sequence in
+    // the original quiz: pass missed question indices + the original quiz so the
+    // follow-up can reason against what the learner actually saw.
+    const originalQuiz=q.questions||[];
+    const missedIdx=originalQuiz.map((qq,i)=>({qq,i,a:S.answers?.[i]})).filter(x=>{
+      const correctOpt=(x.qq.options||[]).find(o=>o.correct);
+      return !x.a||x.a!==correctOpt?.label;
+    }).map(x=>x.i);
     const result=await api('/api/followup',{
       wrong_answers:r.wrongAnswers,
       weak_concepts:weakConceptIds,
       transcript,
+      missed_question_indices:missedIdx,
+      original_quiz:originalQuiz,
+      areas_to_strengthen:r.weakAreas||[],
       learner_context:{learning_style:profile.learningStyle||{},weak_areas:profile.weakAreas||[],overall_accuracy:Math.round((profile.accuracy||.5)*100)}
-    });
+    },240000);
     if(result.error)throw new Error(result.error);
     if(!result.quiz||!result.quiz.length)throw new Error('Follow-up generated no questions. Try again.');
     const followup={id:Date.now().toString(36),video_id:q.video_id,video_title:q.video_title,quiz_type:'followup',questions:result.quiz,focus_areas:result.focus_areas||[],diagnosis:result.diagnosis||'',teaching_strategy:result.teaching_strategy||'',created_at:new Date().toISOString()};
