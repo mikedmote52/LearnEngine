@@ -1,0 +1,14 @@
+# Local-dev only files — never deploy these to Vercel.
+# The Vercel deployment is just the static client + api/index.py serverless function.
+legacy_local_app.py
+analyzer.py
+db.py
+quiz_engine.py
+transcript.py
+transcript_proxy.py
+start.sh
+data/
+__pycache__/
+*.pyc
+quiz_1960s_*.html
+AUDIT.md
