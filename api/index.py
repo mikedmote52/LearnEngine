@@ -882,22 +882,82 @@ def resolve_podcast(url):
     raise ValueError({"code": "EXCLUSIVE_NO_RSS", "msg": "could not resolve podcast — paste an RSS feed or Apple Podcasts URL"})
 
 
-def _gemini_audio_call(prompt, audio_url, model, timeout=180, max_tokens=12000):
-    """Call OpenRouter -> Gemini with a remote audio URL.
-    Try direct URL first (fast, no download); fall back to base64 download if rejected.
+AUDIO_CAP_BYTES = 18_000_000  # 18 MB MP3 → ~24 MB base64; stays under Gemini inline limit
+AUDIO_HARD_CAP  = 60_000_000  # don't download more than this even when truncating
+
+
+def _download_audio_capped(audio_url, cap_bytes=AUDIO_CAP_BYTES, hard_cap=AUDIO_HARD_CAP):
+    """Stream-download an audio URL, truncating to cap_bytes if larger.
+    Returns (bytes, was_truncated, total_size_seen)."""
+    req = urllib.request.Request(audio_url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        chunks = []
+        seen = 0
+        truncated = False
+        while True:
+            chunk = resp.read(64 * 1024)
+            if not chunk:
+                break
+            seen += len(chunk)
+            if seen <= cap_bytes:
+                chunks.append(chunk)
+            else:
+                # We've collected enough, just count remaining to report total size
+                truncated = True
+                # Stop reading after we've seen up to hard_cap so we don't wait forever
+                if seen > hard_cap:
+                    break
+        return b"".join(chunks), truncated, seen
+
+
+def _gemini_audio_call(prompt, audio_url, model, timeout=240, max_tokens=12000):
+    """Call OpenRouter -> Gemini with audio bytes (base64 inline).
+    Audio is downloaded server-side and capped at AUDIO_CAP_BYTES so we stay
+    under Gemini's inline-data request limit (~20 MB). For long episodes the
+    first ~30-45 minutes of content is analyzed.
     Returns (text, format_used).
     """
     if not OPENROUTER_KEY:
         raise RuntimeError("OPENROUTER_API_KEY not set")
 
+    # Download audio (capped)
+    audio_bytes, truncated, total = _download_audio_capped(audio_url)
+    if not audio_bytes:
+        raise RuntimeError("audio download produced 0 bytes")
+
+    # Detect MIME from URL extension; default to mpeg
+    lower = audio_url.lower().split("?")[0]
+    if lower.endswith(".m4a"):
+        mime = "audio/mp4"
+    elif lower.endswith(".wav"):
+        mime = "audio/wav"
+    elif lower.endswith(".ogg"):
+        mime = "audio/ogg"
+    else:
+        mime = "audio/mpeg"
+
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+    data_uri = "data:" + mime + ";base64," + b64
+
+    note = ""
+    if truncated:
+        note = ("\n\n[Note: episode is large; analyzing the first ~"
+                + str(round(len(audio_bytes) / 1_000_000)) + "MB of audio "
+                "out of ~" + str(round(total / 1_000_000)) + "MB total. "
+                "Focus on the substantive content covered in this portion.]")
+
+    # Two content shapes — try Google-native file_data first, fall back to OpenAI input_audio
     formats = [
-        ("file_url", [
-            {"type": "text", "text": prompt},
-            {"type": "file", "file": {"file_data": audio_url, "mime_type": "audio/mpeg"}},
+        ("file_data_inline", [
+            {"type": "text", "text": prompt + note},
+            {"type": "file", "file": {"file_data": data_uri, "mime_type": mime}},
+        ]),
+        ("input_audio", [
+            {"type": "text", "text": prompt + note},
+            {"type": "input_audio", "input_audio": {"data": b64, "format": mime.split("/")[-1]}},
         ]),
     ]
 
-    # Try the URL-passing format first
     errors = []
     for fmt_name, content in formats:
         payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
@@ -924,50 +984,12 @@ def _gemini_audio_call(prompt, audio_url, model, timeout=180, max_tokens=12000):
                     return text, fmt_name
                 errors.append(fmt_name + ": empty content")
         except urllib.error.HTTPError as e:
-            err_body = (e.read().decode() if e.fp else str(e))[:600]
+            err_body = (e.read().decode() if e.fp else str(e))[:500]
             errors.append(fmt_name + ": HTTP " + str(e.code) + ": " + err_body)
         except Exception as e:
             errors.append(fmt_name + ": " + type(e).__name__ + ": " + str(e))
 
-    # Fallback: download MP3, base64 it, send inline
-    try:
-        # Cap at ~25 MB MP3 (covers ~50 minutes at 64 kbps)
-        audio_bytes = _http_get(audio_url, headers={"User-Agent": USER_AGENT}, timeout=60, max_bytes=25_000_000)
-        b64 = base64.b64encode(audio_bytes).decode("ascii")
-        data_uri = "data:audio/mpeg;base64," + b64
-        content = [
-            {"type": "text", "text": prompt},
-            {"type": "file", "file": {"file_data": data_uri, "mime_type": "audio/mpeg"}},
-        ]
-        payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
-        body = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/chat/completions",
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer " + OPENROUTER_KEY,
-                "HTTP-Referer": "https://mikedmote52.github.io/LearnEngine/",
-                "X-Title": "LearnEngine",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-            msg = data.get("choices", [{}])[0].get("message", {})
-            text = msg.get("content", "")
-            if isinstance(text, list):
-                text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
-            text = (text or "").strip()
-            if text:
-                return text, "base64_inline"
-            errors.append("base64_inline: empty content")
-    except urllib.error.HTTPError as e:
-        err_body = (e.read().decode() if e.fp else str(e))[:600]
-        errors.append("base64_inline: HTTP " + str(e.code) + ": " + err_body)
-    except Exception as e:
-        errors.append("base64_inline: " + type(e).__name__ + ": " + str(e))
-
-    raise RuntimeError("; ".join(errors) or "all audio paths failed")
+    raise RuntimeError("; ".join(errors) or "all audio formats failed")
 
 
 def _podcast_quiz_prompt(episode_title, show_title):
