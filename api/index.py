@@ -217,7 +217,13 @@ def fetch_transcript_route():
         }), 400
 
 
-# ---- Analysis (Sonnet for reasoning + caching) ----
+# ---- Analysis: two-pass design ----
+# Pass 1 (Sonnet, small output ~2k tokens): summary, concepts, fact-check, objectives.
+#   Hard reasoning. Concept synthesis, difficulty calibration, fact-checking.
+# Pass 2 (Haiku, larger output ~8k tokens): quiz questions + distractors + hints.
+#   Bulk formatting. Cached transcript reused from pass 1 (cache hit, ~90% input savings).
+# Both calls use cache_control: ephemeral on the transcript so the second pass reads
+# the cache instead of paying full input cost again.
 
 @app.route("/api/analyze", methods=["POST"])
 def analyze_route():
@@ -246,13 +252,14 @@ def analyze_route():
             "challenging: synthesis questions."
         )
 
-    cached = (
+    cached_transcript = (
         "You are an expert educational content designer.\n"
         "VIDEO TITLE: " + title + "\n"
         "TRANSCRIPT:\n" + truncated + "\n"
     )
 
-    prompt = (
+    # ---- Pass 1: Sonnet — concept synthesis + fact-check (hard reasoning) ----
+    pass1_prompt = (
         learner_section + "\n\n"
         "Analyze the cached transcript above for DEEP UNDERSTANDING. "
         "Respond with JSON only (no markdown fencing):\n\n"
@@ -261,7 +268,9 @@ def analyze_route():
         '  "key_concepts": [\n'
         '    {"id":"concept_1","name":"Short name","explanation":"Clear explanation",'
         '"simple_analogy":"Everyday analogy","topic":"Category",'
-        '"importance":"high/medium/low"}\n'
+        '"importance":"high/medium/low",'
+        '"common_misconception":"What learners typically get wrong",'
+        '"deeper_insight":"Beyond what the video states"}\n'
         "  ],\n"
         '  "fact_check": [\n'
         '    {"claim":"Specific claim","assessment":"accurate/partially_accurate/inaccurate/unverifiable",'
@@ -272,33 +281,72 @@ def analyze_route():
         "  ],\n"
         '  "bias_notes": "Notable biases or missing context",\n'
         '  "difficulty_level": "beginner/intermediate/advanced",\n'
-        '  "learning_objectives": ["By the end you should be able to..."],\n'
+        '  "learning_objectives": ["By the end you should be able to..."]\n'
+        "}\n\n"
+        "RULES:\n"
+        "- 6-12 key_concepts covering the substantive content\n"
+        "- Fact-check ALL claims, dates, statistics. Be specific.\n"
+        "- common_misconception is the actual cognitive error learners make on this concept\n"
+        "- deeper_insight goes beyond the transcript with related context"
+    )
+
+    try:
+        analysis_text = call_llm(
+            pass1_prompt, model=SONNET, max_tokens=4000, cached_context=cached_transcript
+        )
+        analysis = parse_json_response(analysis_text)
+    except json.JSONDecodeError as e:
+        return jsonify({"error": "Failed to parse pass-1 analysis: " + str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": "Pass 1 (analysis) failed: " + str(e)}), 500
+
+    # ---- Pass 2: Haiku — quiz batch (bulk formatting from concepts) ----
+    concepts = analysis.get("key_concepts") or []
+    difficulty = analysis.get("difficulty_level", "intermediate")
+
+    pass2_prompt = (
+        learner_section + "\n\n"
+        "Using the cached transcript above as ground truth and the concept list below, "
+        "generate a quiz of 10-15 questions in ONE batched response. JSON only:\n\n"
+        "CONCEPTS: " + json.dumps(concepts) + "\n"
+        "OVERALL DIFFICULTY: " + difficulty + "\n\n"
+        "{\n"
         '  "quiz": [\n'
-        '    {"question":"...","concept_id":"...","concept_name":"...","topic":"...",'
+        '    {"question":"Clear question testing understanding",'
+        '"concept_id":"id from concept list","concept_name":"readable name","topic":"topic area",'
         '"difficulty":"easy/medium/hard","bloom_level":"remember/understand/apply/analyze/evaluate",'
         '"options":['
         '{"label":"A","text":"...","correct":false,"why_wrong":"..."},'
         '{"label":"B","text":"...","correct":true,"why_wrong":null},'
         '{"label":"C","text":"...","correct":false,"why_wrong":"..."},'
-        '{"label":"D","text":"...","correct":false,"why_wrong":"..."}],'
-        '"explanation":"...","common_misconception":"...","deeper_insight":"...","hint":"..."}\n'
+        '{"label":"D","text":"...","correct":false,"why_wrong":"..."}'
+        '],'
+        '"explanation":"Why correct is correct (2-3 sentences)",'
+        '"common_misconception":"Most common mistake",'
+        '"deeper_insight":"Beyond the video","hint":"Nudge without revealing"}\n'
         "  ]\n"
         "}\n\n"
         "RULES:\n"
-        "- 10-15 questions in ONE batched response covering ALL key concepts\n"
+        "- 10-15 questions covering ALL key concepts\n"
         "- Bloom's: 20% remember, 30% understand, 25% apply, 15% analyze, 10% evaluate\n"
-        "- Wrong options = REAL misconceptions, not obviously wrong\n"
-        "- Fact-check ALL claims, dates, statistics\n"
-        "- Every hint guides thinking, doesn't reveal answer"
+        "- Wrong options = REAL misconceptions (use the common_misconception from the concept list)\n"
+        "- Exactly ONE option per question has \"correct\": true\n"
+        "- Every correct answer MUST be verifiable directly from the transcript\n"
+        "- Every hint guides thinking, doesn't reveal the answer"
     )
 
     try:
-        text = call_llm(prompt, model=SONNET, max_tokens=12000, cached_context=cached)
-        return jsonify(parse_json_response(text))
+        quiz_text = call_llm(
+            pass2_prompt, model=HAIKU, max_tokens=9000, cached_context=cached_transcript
+        )
+        quiz_payload = parse_json_response(quiz_text)
     except json.JSONDecodeError as e:
-        return jsonify({"error": "Failed to parse AI response: " + str(e)}), 500
+        return jsonify({"error": "Failed to parse pass-2 quiz: " + str(e)}), 500
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Pass 2 (quiz) failed: " + str(e)}), 500
+
+    analysis["quiz"] = quiz_payload.get("quiz", [])
+    return jsonify(analysis)
 
 
 # ---- Adaptive follow-up (Sonnet) ----
@@ -340,11 +388,49 @@ def followup_route():
         "Sequence: Q1-2 prerequisites (easy), Q3-5 build (medium), Q6-8 apply (hard), Q9-10 synthesize"
     )
 
+    # Followup uses the same two-pass split:
+    # Pass 1 (Sonnet, ~1500 tok): diagnosis + teaching strategy
+    # Pass 2 (Haiku, ~7000 tok): the 6-10 batched teaching questions
     try:
-        text = call_llm(prompt, model=SONNET, max_tokens=10000, cached_context=cached)
-        return jsonify(parse_json_response(text))
+        diag_text = call_llm(
+            prompt + "\n\nFor THIS pass, return ONLY: "
+            '{"diagnosis":"...","teaching_strategy":"...","focus_areas":["..."]}',
+            model=SONNET, max_tokens=1500, cached_context=cached,
+        )
+        diag = parse_json_response(diag_text)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Followup pass 1 failed: " + str(e)}), 500
+
+    quiz_prompt = (
+        "Build the teaching-question batch for the diagnosis below. JSON only:\n\n"
+        + "DIAGNOSIS: " + json.dumps(diag) + "\n\n"
+        + "WRONG ANSWERS: " + json.dumps(wrong_answers) + style_ctx + "\n\n"
+        '{"quiz":[{"question":"...","concept_id":"...","concept_name":"...","topic":"...",'
+        '"difficulty":"easy/medium/hard","bloom_level":"remember/understand/apply/analyze",'
+        '"scaffold_note":"...","teaching_moment":"...",'
+        '"options":['
+        '{"label":"A","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"B","text":"...","correct":true,"why_wrong":null},'
+        '{"label":"C","text":"...","correct":false,"why_wrong":"..."},'
+        '{"label":"D","text":"...","correct":false,"why_wrong":"..."}'
+        '],"explanation":"...","deeper_insight":"...","hint":"..."}]}\n\n'
+        "Sequence: Q1-2 prerequisites (easy), Q3-5 build (medium), Q6-8 apply (hard), Q9-10 synthesize. "
+        "6-10 questions total. Exactly ONE correct option per question."
+    )
+    try:
+        quiz_text = call_llm(
+            quiz_prompt, model=HAIKU, max_tokens=8000, cached_context=cached
+        )
+        quiz_payload = parse_json_response(quiz_text)
+    except Exception as e:
+        return jsonify({"error": "Followup pass 2 failed: " + str(e)}), 500
+
+    return jsonify({
+        "diagnosis": diag.get("diagnosis", ""),
+        "teaching_strategy": diag.get("teaching_strategy", ""),
+        "focus_areas": diag.get("focus_areas", []),
+        "quiz": quiz_payload.get("quiz", []),
+    })
 
 
 # ---- Spaced review (Haiku — bulk formatting from due-list) ----
