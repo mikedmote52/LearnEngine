@@ -398,32 +398,402 @@ def _dedupe_questions_by_embedding(questions, threshold=QC_DEDUP_THRESHOLD):
 
 def _sanitize_quiz_list(quiz):
     """Drop malformed questions, ensure exactly one correct option, label A/B/C/D.
-    Mirrors the inline sanitization that lived in each route."""
+    Also drops any question whose options have empty/whitespace-only text — that
+    was the visible bug in Mike's 20-question quiz where Q4-C and Q5-B rendered
+    as blank choices. Better to drop the whole question than ship a broken one."""
     cleaned = []
     if not isinstance(quiz, list):
         return cleaned
     for q in quiz:
         if not isinstance(q, dict):
             continue
-        opts = q.get("options") or []
-        if not q.get("question") or not opts:
+        if not (q.get("question") or "").strip():
             continue
-        correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
+        opts = q.get("options") or []
+        if not opts:
+            continue
+        # Drop the entire question if any option is missing visible text.
+        # Renderer assumes 4 selectable choices; a blank one is a UX dead-end.
+        bad_option = False
+        for o in opts:
+            if not isinstance(o, dict):
+                bad_option = True
+                break
+            if not (o.get("text") or "").strip():
+                bad_option = True
+                break
+        if bad_option:
+            continue
+        correct_count = sum(1 for o in opts if o.get("correct"))
         if correct_count == 0:
             continue
         if correct_count > 1:
             seen_correct = False
             for o in opts:
-                if isinstance(o, dict) and o.get("correct"):
+                if o.get("correct"):
                     if seen_correct:
                         o["correct"] = False
                     else:
                         seen_correct = True
         for idx, o in enumerate(opts):
-            if isinstance(o, dict) and not o.get("label"):
+            if not o.get("label"):
                 o["label"] = chr(65 + idx)
         cleaned.append(q)
     return cleaned
+
+
+# ============== Pass 3: QA gate + judge ==============
+# The original pipeline ran Pass 1 (Sonnet fact-check) and Pass 2 (Haiku quiz
+# generation) in parallel, and the two never spoke. That left an open seam: a
+# fact Pass 1 flagged as misinformation could still appear as the "correct"
+# answer in Pass 2's quiz, and Pass 2 had no quality filter beyond schema
+# checks. The QA pipeline below closes that seam.
+#
+# Two stages, gated by env vars so we can roll back instantly:
+#   STRICT_QA            (default "true")    -- master switch
+#   STRICT_QA_THRESHOLD  (default "0.7")     -- min confidence for judge
+#
+# Stage A (gate, Haiku): semantic match between each question's marked-correct
+# answer + stem and the misinformation_flags / inaccurate fact_check entries
+# from Pass 1. Cheap, deterministic-ish, catches the obvious lies-as-facts
+# failure mode.
+#
+# Stage B (judge, Sonnet): structured per-question scoring on four bools
+# (correct supported, distractors clearly wrong, single defensible answer,
+# self-contained) plus a confidence float. Drops anything below threshold or
+# any false bool.
+#
+# Both stages return drop_reasons so the response includes diagnostic context
+# without exposing raw model traces.
+
+_STRICT_QA_ENABLED_DEFAULT = "true"
+_STRICT_QA_THRESHOLD_DEFAULT = "0.7"
+
+
+def _strict_qa_enabled():
+    return os.environ.get("STRICT_QA", _STRICT_QA_ENABLED_DEFAULT).strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _strict_qa_threshold():
+    try:
+        return float(os.environ.get("STRICT_QA_THRESHOLD", _STRICT_QA_THRESHOLD_DEFAULT))
+    except (TypeError, ValueError):
+        return float(_STRICT_QA_THRESHOLD_DEFAULT)
+
+
+def _correct_option_text(question):
+    """Return the marked-correct option's text, or '' if none/malformed."""
+    for o in (question.get("options") or []):
+        if isinstance(o, dict) and o.get("correct"):
+            return (o.get("text") or "").strip()
+    return ""
+
+
+def _flagged_claims_from_pass1(fact_check, misinformation_flags):
+    """Collect claim strings worth checking against. We look at:
+      - explicit misinformation_flags (Pass 1 may emit them as strings or dicts)
+      - fact_check entries assessed as 'inaccurate' or 'partially_accurate'
+    Returns a deduped list of plain strings."""
+    out = []
+    for item in (misinformation_flags or []):
+        if isinstance(item, str):
+            s = item.strip()
+            if s:
+                out.append(s)
+        elif isinstance(item, dict):
+            s = (item.get("claim") or item.get("text") or item.get("flag") or "").strip()
+            if s:
+                out.append(s)
+    for item in (fact_check or []):
+        if not isinstance(item, dict):
+            continue
+        assessment = (item.get("assessment") or "").strip().lower()
+        if assessment in ("inaccurate", "partially_accurate"):
+            s = (item.get("claim") or "").strip()
+            if s:
+                out.append(s)
+    seen = set()
+    deduped = []
+    for s in out:
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(s)
+    return deduped
+
+
+def _qa_gate_drop_misinformation(quiz, fact_check, misinformation_flags):
+    """Stage A: semantic match between each question's correct answer and any
+    Pass-1 flagged claims. Uses one Haiku call to score all (question, claim)
+    pairs in a single JSON payload. Falls back to substring matching if the
+    LLM call fails — better to have weak filtering than no filtering."""
+    if not isinstance(quiz, list) or not quiz:
+        return list(quiz or []), []
+
+    flagged = _flagged_claims_from_pass1(fact_check, misinformation_flags)
+    if not flagged:
+        return list(quiz), []
+
+    # Build a compact prompt: list of questions with index, list of flagged
+    # claims with index. Ask Haiku to return drops as a JSON array of
+    # {question_index, claim_index, reason}.
+    q_lines = []
+    for i, q in enumerate(quiz):
+        stem = (q.get("question") or "").strip()
+        ans = _correct_option_text(q)
+        q_lines.append(str(i) + ". STEM: " + stem[:300] + " | CORRECT: " + ans[:200])
+
+    c_lines = []
+    for i, claim in enumerate(flagged):
+        c_lines.append(str(i) + ". " + claim[:300])
+
+    prompt = (
+        "You are a fact-checking gate for an educational quiz. Below is a list "
+        "of FLAGGED CLAIMS (statements known to be inaccurate or unverified) and "
+        "a list of QUIZ QUESTIONS. For each question, decide whether its STEM or "
+        "marked-CORRECT answer semantically matches any flagged claim — i.e., "
+        "the question would teach a learner the flagged misinformation as truth. "
+        "Use semantic equivalence, not just string match: paraphrases, "
+        "rewordings, and partial overlaps still count if the underlying claim "
+        "is the same.\n\n"
+        "FLAGGED CLAIMS:\n" + "\n".join(c_lines) + "\n\n"
+        "QUIZ QUESTIONS:\n" + "\n".join(q_lines) + "\n\n"
+        "Respond with COMPACT JSON only (no fences, no prose):\n"
+        '{"drops":[{"q":<question_index>,"c":<claim_index>,"reason":"<short>"}]}\n'
+        "If nothing matches, return {\"drops\":[]}."
+    )
+
+    drops_by_q = {}
+    try:
+        text = call_llm(prompt, model=HAIKU, max_tokens=500)
+        payload = parse_json_response(text)
+        for d in (payload.get("drops") or []):
+            if not isinstance(d, dict):
+                continue
+            q_idx = d.get("q")
+            if not isinstance(q_idx, int) or q_idx < 0 or q_idx >= len(quiz):
+                continue
+            c_idx = d.get("c")
+            claim_str = ""
+            if isinstance(c_idx, int) and 0 <= c_idx < len(flagged):
+                claim_str = flagged[c_idx]
+            reason = (d.get("reason") or "").strip() or "matches Pass-1 flagged claim"
+            if claim_str:
+                reason = reason + " [claim: " + claim_str[:120] + "]"
+            drops_by_q.setdefault(q_idx, reason)
+    except Exception as e:
+        # Fallback: substring overlap on lowered tokens. Not as smart as Haiku
+        # but at least we catch verbatim repeats.
+        for i, q in enumerate(quiz):
+            blob = ((q.get("question") or "") + " " + _correct_option_text(q)).lower()
+            for claim in flagged:
+                lc = claim.lower()
+                if not lc:
+                    continue
+                # Require a meaningful overlap, not a single common word.
+                tokens = [t for t in lc.split() if len(t) > 4]
+                hits = sum(1 for t in tokens if t in blob)
+                if tokens and hits / max(len(tokens), 1) >= 0.5:
+                    drops_by_q[i] = "fallback substring match: " + claim[:120]
+                    break
+
+    kept = []
+    drop_reasons = []
+    for i, q in enumerate(quiz):
+        if i in drops_by_q:
+            drop_reasons.append({
+                "stage": "gate",
+                "question": (q.get("question") or "")[:160],
+                "reason": drops_by_q[i],
+            })
+        else:
+            kept.append(q)
+    return kept, drop_reasons
+
+
+def _qa_judge_questions(quiz, source_context):
+    """Stage B: Sonnet scores each question on four quality bools plus a
+    confidence float. Drops anything where any bool is false or confidence is
+    below STRICT_QA_THRESHOLD. One call for the whole quiz to keep cost
+    bounded — Sonnet handles batched per-item scoring well at this size."""
+    if not isinstance(quiz, list) or not quiz:
+        return list(quiz or []), []
+
+    threshold = _strict_qa_threshold()
+
+    # Truncate source context — judge needs grounding, not the whole transcript.
+    src = (source_context or "").strip()
+    if len(src) > 24000:
+        src = src[:24000] + "\n[truncated]"
+
+    q_blocks = []
+    for i, q in enumerate(quiz):
+        stem = (q.get("question") or "").strip()
+        opts = q.get("options") or []
+        opt_lines = []
+        for o in opts:
+            if not isinstance(o, dict):
+                continue
+            tag = "*" if o.get("correct") else " "
+            opt_lines.append("  [" + tag + "] " + (o.get("label") or "") + ". " +
+                             (o.get("text") or "")[:240])
+        q_blocks.append(
+            str(i) + ". " + stem[:400] + "\n" + "\n".join(opt_lines)
+        )
+
+    prompt = (
+        "You are a strict quality judge for an educational quiz. Score each "
+        "question against the SOURCE below.\n\n"
+        "For each question return four booleans and a confidence float:\n"
+        "  correct_supported: the marked-correct answer is supported by the source.\n"
+        "  distractors_wrong: every non-correct option is clearly wrong per the source.\n"
+        "  single_answer: exactly one option is defensibly correct (no ambiguity).\n"
+        "  self_contained: the question makes sense without external context.\n"
+        "  confidence: 0.0-1.0 overall confidence the question is high quality.\n\n"
+        "SOURCE:\n" + src + "\n\n"
+        "QUESTIONS:\n" + "\n\n".join(q_blocks) + "\n\n"
+        "Respond with COMPACT JSON only (no fences, no prose):\n"
+        '{"scores":[{"q":<idx>,"correct_supported":bool,"distractors_wrong":bool,'
+        '"single_answer":bool,"self_contained":bool,"confidence":<float>,'
+        '"reason":"<short, only if dropping>"}]}'
+    )
+
+    scores_by_q = {}
+    try:
+        text = call_llm(prompt, model=SONNET, max_tokens=2500)
+        payload = parse_json_response(text)
+        for s in (payload.get("scores") or []):
+            if not isinstance(s, dict):
+                continue
+            q_idx = s.get("q")
+            if not isinstance(q_idx, int) or q_idx < 0 or q_idx >= len(quiz):
+                continue
+            scores_by_q[q_idx] = s
+    except Exception:
+        # If the judge call fails entirely, fail open: keep all questions but
+        # mark the failure in drop_reasons so the response surfaces it.
+        return list(quiz), [{
+            "stage": "judge",
+            "question": "[judge call failed — keeping all questions]",
+            "reason": "Sonnet judge call raised; fail-open to preserve UX",
+        }]
+
+    kept = []
+    drop_reasons = []
+    for i, q in enumerate(quiz):
+        s = scores_by_q.get(i)
+        if not s:
+            # No score returned for this question — fail open per question.
+            kept.append(q)
+            continue
+        bools = [
+            bool(s.get("correct_supported")),
+            bool(s.get("distractors_wrong")),
+            bool(s.get("single_answer")),
+            bool(s.get("self_contained")),
+        ]
+        try:
+            conf = float(s.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        if all(bools) and conf >= threshold:
+            kept.append(q)
+            continue
+        why_bool = []
+        names = ["correct_supported", "distractors_wrong", "single_answer", "self_contained"]
+        for name, val in zip(names, bools):
+            if not val:
+                why_bool.append(name + "=false")
+        why = (s.get("reason") or "").strip()
+        composed = "conf=" + ("%.2f" % conf)
+        if why_bool:
+            composed = composed + " " + ",".join(why_bool)
+        if why:
+            composed = composed + " :: " + why[:160]
+        drop_reasons.append({
+            "stage": "judge",
+            "question": (q.get("question") or "")[:160],
+            "reason": composed,
+        })
+    return kept, drop_reasons
+
+
+def _build_source_context(analysis, transcript=None):
+    """Assemble a 'source of truth' string for the judge. For text routes we
+    have the transcript directly. For routes where Gemini watched the video,
+    the best proxy is the analysis fields it returned (summary + concepts +
+    fact_check). Concatenate whatever's available."""
+    if transcript and isinstance(transcript, str) and transcript.strip():
+        return transcript[:24000]
+    parts = []
+    if isinstance(analysis, dict):
+        if analysis.get("summary"):
+            parts.append("SUMMARY:\n" + str(analysis["summary"]))
+        kc = analysis.get("key_concepts") or analysis.get("concepts") or []
+        if kc:
+            lines = []
+            for c in kc:
+                if isinstance(c, dict):
+                    name = c.get("name", "")
+                    expl = c.get("explanation", "")
+                    lines.append("- " + name + ": " + expl)
+            if lines:
+                parts.append("KEY CONCEPTS:\n" + "\n".join(lines))
+        fc = analysis.get("fact_check") or analysis.get("fact_checks") or []
+        if fc:
+            lines = []
+            for c in fc:
+                if isinstance(c, dict):
+                    claim = c.get("claim", "")
+                    assessment = c.get("assessment", "")
+                    lines.append("- (" + assessment + ") " + claim)
+            if lines:
+                parts.append("FACT CHECK:\n" + "\n".join(lines))
+        if analysis.get("learning_objectives"):
+            parts.append("OBJECTIVES:\n" + "\n".join(
+                str(x) for x in analysis["learning_objectives"]
+            ))
+    return "\n\n".join(parts)
+
+
+def _apply_qa_pipeline(quiz, analysis=None, transcript=None):
+    """Orchestrator: run gate, then judge, then return (filtered_quiz, qa_meta).
+    Honors STRICT_QA env var. qa_meta is always present even when QA is off so
+    clients can rely on its shape."""
+    pre_count = len(quiz or [])
+    if not _strict_qa_enabled() or not quiz:
+        return list(quiz or []), {
+            "pre_filter_count": pre_count,
+            "gate_dropped": 0,
+            "judge_dropped": 0,
+            "final_count": pre_count,
+            "drop_reasons": [],
+            "enabled": False,
+        }
+
+    fact_check = []
+    misinfo = []
+    if isinstance(analysis, dict):
+        fact_check = analysis.get("fact_check") or analysis.get("fact_checks") or []
+        misinfo = analysis.get("misinformation_flags") or []
+
+    after_gate, gate_reasons = _qa_gate_drop_misinformation(quiz, fact_check, misinfo)
+    source_context = _build_source_context(analysis, transcript=transcript)
+    after_judge, judge_reasons = _qa_judge_questions(after_gate, source_context)
+
+    all_reasons = (gate_reasons + judge_reasons)[:5]
+    return after_judge, {
+        "pre_filter_count": pre_count,
+        "gate_dropped": pre_count - len(after_gate),
+        "judge_dropped": len(after_gate) - len(after_judge),
+        "final_count": len(after_judge),
+        "drop_reasons": all_reasons,
+        "enabled": True,
+        "threshold": _strict_qa_threshold(),
+    }
 
 
 def _generate_quiz_in_batches(build_prompt, call_one, count):
@@ -785,7 +1155,10 @@ def analyze_route():
     except Exception as e:
         return jsonify({"error": "Analysis failed: " + str(e)}), 500
 
-    analysis["quiz"] = quiz_payload.get("quiz", [])
+    raw_quiz = _sanitize_quiz_list(quiz_payload.get("quiz", []))
+    filtered_quiz, qa_meta = _apply_qa_pipeline(raw_quiz, analysis=analysis, transcript=truncated)
+    analysis["quiz"] = filtered_quiz
+    analysis["qa_meta"] = qa_meta
     return jsonify(analysis)
 
 
@@ -953,7 +1326,9 @@ def analyze_youtube_route():
         # Cap to requested count — Gemini occasionally overshoots when the
         # prompt says "exactly N", and users asked for N, not N+5.
         cleaned = _sanitize_quiz_list(analysis.get("quiz") or [])
-        analysis["quiz"] = cleaned[:question_count]
+        filtered, qa_meta = _apply_qa_pipeline(cleaned, analysis=analysis)
+        analysis["quiz"] = filtered[:question_count]
+        analysis["qa_meta"] = qa_meta
     else:
         # Batched path: parallel calls of QC_BATCH_SIZE, dedupe via embeddings
         def build_prompt_batched(per_count, focus_text):
@@ -983,7 +1358,11 @@ def analyze_youtube_route():
         # "got 37 of 50 — one batch hiccuped" rather than silently
         # under-delivering. We still return 200 since the partial quiz is
         # useful.
-        analysis["quiz"] = (analysis.get("quiz") or [])[:question_count]
+        filtered, qa_meta = _apply_qa_pipeline(
+            analysis.get("quiz") or [], analysis=analysis
+        )
+        analysis["quiz"] = filtered[:question_count]
+        analysis["qa_meta"] = qa_meta
 
     # Spec aliases (keeps endpoint compatible with both client renderer and spec)
     analysis["concepts"] = analysis.get("key_concepts", [])
@@ -1577,7 +1956,9 @@ def analyze_podcast_route():
                 "model_used": model_used,
             }), 500
         cleaned = _sanitize_quiz_list(analysis.get("quiz") or [])
-        analysis["quiz"] = cleaned[:question_count]
+        filtered, qa_meta = _apply_qa_pipeline(cleaned, analysis=analysis)
+        analysis["quiz"] = filtered[:question_count]
+        analysis["qa_meta"] = qa_meta
     else:
         def build_prompt_batched(per_count, focus_text):
             return _podcast_quiz_prompt(
@@ -1600,7 +1981,11 @@ def analyze_podcast_route():
                 "batches_run": result["batches_run"],
                 "batches_ok": result["batches_ok"],
             }), 502
-        analysis["quiz"] = (analysis.get("quiz") or [])[:question_count]
+        filtered, qa_meta = _apply_qa_pipeline(
+            analysis.get("quiz") or [], analysis=analysis
+        )
+        analysis["quiz"] = filtered[:question_count]
+        analysis["qa_meta"] = qa_meta
 
     analysis["concepts"] = analysis.get("key_concepts", [])
     analysis["fact_checks"] = analysis.get("fact_check", [])
@@ -1783,7 +2168,9 @@ def analyze_book_chapter_route():
                 "model_used": model_used,
             }), 500
         cleaned = _sanitize_quiz_list(analysis.get("quiz") or [])
-        analysis["quiz"] = cleaned[:question_count]
+        filtered, qa_meta = _apply_qa_pipeline(cleaned, analysis=analysis)
+        analysis["quiz"] = filtered[:question_count]
+        analysis["qa_meta"] = qa_meta
     else:
         def build_prompt_batched(per_count, focus_text):
             return _book_prompt(chapter_title, question_count=per_count, batch_focus=focus_text)
@@ -1801,7 +2188,11 @@ def analyze_book_chapter_route():
                 "batches_run": result["batches_run"],
                 "batches_ok": result["batches_ok"],
             }), 502
-        analysis["quiz"] = (analysis.get("quiz") or [])[:question_count]
+        filtered, qa_meta = _apply_qa_pipeline(
+            analysis.get("quiz") or [], analysis=analysis
+        )
+        analysis["quiz"] = filtered[:question_count]
+        analysis["qa_meta"] = qa_meta
 
     analysis["concepts"] = analysis.get("key_concepts", [])
     analysis["fact_checks"] = analysis.get("fact_check", [])
