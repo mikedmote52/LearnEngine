@@ -158,21 +158,78 @@ def call_llm(prompt, model, max_tokens=4000, cached_context=None):
 
 
 def parse_json_response(text):
-    text = text.strip()
+    """Extract JSON from a Gemini response. Handles markdown fences and a
+    handful of common truncation modes:
+      * complete JSON (trivial path)
+      * fenced JSON (```json ... ``` — handles truncated trailing fence)
+      * truncated JSON arrays (e.g. quiz cut mid-question) — repair by
+        trimming back to the last complete object and closing brackets so
+        users still get a partial-but-valid quiz instead of a 500.
+    """
+    text = (text or "").strip()
+    # Strip markdown fences. Be lenient: trailing ``` may be missing if the
+    # model truncated mid-output (Gemini occasionally hits the output cap).
     if text.startswith("```"):
         text = re.sub(r"^```\w*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
+        text = re.sub(r"\n?```\s*$", "", text)
         text = text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+    # Greedy extraction of the outermost {...}
     match = re.search(r"\{[\s\S]*\}", text)
     if match:
         try:
             return json.loads(match.group())
         except json.JSONDecodeError:
             pass
+    # Truncation repair: walk back from end, find last complete `}` (depth-0)
+    # plus close any open `]` for arrays mid-flight. Saves a quiz that lost
+    # its final question to the output cap.
+    if "{" in text:
+        first = text.find("{")
+        depth = 0
+        in_str = False
+        esc = False
+        last_complete = -1
+        last_complete_array = -1
+        for i in range(first, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    last_complete = i
+            elif ch == "[" and depth == 1:
+                pass  # array start at top-level, no special tracking
+            elif ch == "," and depth == 2:
+                # Top-level array element boundary — this is the spot to
+                # truncate so the array stays well-formed.
+                last_complete_array = i
+        if last_complete > first:
+            try:
+                return json.loads(text[first:last_complete + 1])
+            except json.JSONDecodeError:
+                pass
+        if last_complete_array > first:
+            # Truncate to the comma, drop it, close the array and outer object
+            candidate = text[first:last_complete_array] + "]}"
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
     raise json.JSONDecodeError("Could not extract JSON", text, 0)
 
 
@@ -257,9 +314,12 @@ def _batch_focus_for(i):
 
 def _max_tokens_for_count(count):
     """Output-token budget that scales with question count.
-    ~600 tokens per question gives plenty of headroom for the 4-option
-    schema with explanations. Capped at 60k (Gemini Flash output cap)."""
-    return max(8000, min(60000, count * 600))
+    Headroom matters: each 4-option question with explanations + misconception
+    + deeper insight runs ~600-900 output tokens, plus the per-call summary +
+    key_concepts + fact_check overhead (~1500 tokens). At 1000 tok/q + 2000
+    overhead, 30 questions need 32k, 25 need 27k. Capped at Gemini Flash's
+    65k output ceiling."""
+    return max(8000, min(60000, count * 1000 + 2000))
 
 
 def _embed_strings(inputs):
@@ -392,6 +452,7 @@ def _generate_quiz_in_batches(build_prompt, call_one, count):
 
     batch_results = []
     errors = []
+    raw_excerpts = []  # diagnostic: first 400 chars of each failed batch
     fmt_used = None
     model_used = None
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, n_batches)) as ex:
@@ -405,6 +466,12 @@ def _generate_quiz_in_batches(build_prompt, call_one, count):
             try:
                 payload = parse_json_response(text)
             except json.JSONDecodeError as e:
+                # Capture excerpts so callers can see what Gemini actually
+                # returned when the parse repair didn't save us.
+                raw_excerpts.append("batch " + str(i + 1) + " head: "
+                                    + (text or "")[:300])
+                raw_excerpts.append("batch " + str(i + 1) + " tail: "
+                                    + (text or "")[-300:])
                 errors.append("batch " + str(i + 1) + " parse: " + str(e))
                 continue
             qs = _sanitize_quiz_list(payload.get("quiz") or [])
@@ -430,6 +497,7 @@ def _generate_quiz_in_batches(build_prompt, call_one, count):
     return {
         "payload": base_payload,
         "errors": errors,
+        "raw_excerpts": raw_excerpts,
         "fmt_used": fmt_used,
         "model_used": model_used,
         "batches_run": n_batches,
@@ -902,6 +970,7 @@ def analyze_youtube_route():
             return jsonify({
                 "error": "Batched video analysis returned no usable questions.",
                 "details": errors[:8],
+                "raw_excerpts": result.get("raw_excerpts", [])[:6],
                 "video_id": video_id,
                 "batches_run": result["batches_run"],
                 "batches_ok": result["batches_ok"],
