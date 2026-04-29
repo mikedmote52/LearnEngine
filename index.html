@@ -883,6 +883,17 @@ function render() {
   // hide tab bar in immersive views
   const tb = document.getElementById('tabbar');
   if (tb) tb.style.display = (S.view === 'review' || S.view === 'bookcam') ? 'none' : '';
+  // Re-attach the live MediaStream to the freshly-rendered <video>. Each render()
+  // wipes #app's innerHTML, which destroys the previous <video> element and any
+  // bound srcObject. Without this hook, the screen goes black after the first
+  // snap because the new <video> has no stream attached.
+  if (S.view === 'bookcam' && S.bookCapture?.stream) {
+    const v = document.getElementById('camVideo');
+    if (v && v.srcObject !== S.bookCapture.stream) {
+      v.srcObject = S.bookCapture.stream;
+      v.play().catch(()=>{});
+    }
+  }
 }
 
 /* ============== 6. Source picker + capture flows ============== */
@@ -972,7 +983,7 @@ function renderCaptureUrl(kind) {
 }
 
 function setProcStatus(t) { const el = document.getElementById('processStatus'); if (el) el.textContent = t || ''; }
-function setProcErr(t)    { const el = document.getElementById('processErr'); if (el) el.textContent = t || ''; }
+function setProcErr(t)    { const el = document.getElementById('processErr'); if (el) { el.style.color = 'var(--danger)'; el.textContent = t || ''; } }
 
 function refreshSrcMeta(kind) {
   // Best-effort detection; oEmbed lookups are out-of-band for v2 because they
@@ -1087,7 +1098,11 @@ async function processPodcast() {
     const profile = await getProfile();
     const learnerCtx = { learning_style: {}, weak_areas: [], strong_areas: [], overall_accuracy: 50 };
     const result = await api('/api/analyze-podcast', { url, options: { learner_context: learnerCtx } }, 240000);
-    if (result.error) throw new Error(humanizePodcastError(result));
+    if (result.error) {
+      const err = new Error(result.message || result.error);
+      err.payload = result;
+      throw err;
+    }
     sanitizeQuiz(result);
     const sourceId = 'pod_' + (result.episode_id || uid());
     const title = result.title || result.episode_title || 'Podcast episode';
@@ -1103,17 +1118,27 @@ async function processPodcast() {
     S.answers = {}; S.hints = {}; S.processing = false; S.results = null; S.promotedQuestionIdx = {};
     go('quiz');
   } catch (e) {
-    S.processing = false; render(); setProcErr(e.message);
+    S.processing = false; render();
+    const code = e?.payload?.error || '';
+    if (code === 'spotify_exclusive' || code === 'podcast_not_resolvable') {
+      // Friendly, non-alarming render — this is "we can't, here's why" not "something blew up"
+      renderPodcastSoftNotice(e.payload);
+    } else {
+      setProcErr(e.message || 'Podcast analysis failed');
+    }
   }
 }
 
-function humanizePodcastError(e) {
-  const reason = e?.payload?.reason || e?.reason || '';
-  const code = e?.payload?.error || e?.error || '';
-  if (code === 'podcast_not_resolvable') {
-    return 'This podcast couldn\'t be resolved' + (reason ? ' — ' + reason : '') + '. Try another episode or paste the public RSS feed link.';
-  }
-  return e?.payload?.error || e?.message || 'Podcast analysis failed';
+function renderPodcastSoftNotice(payload) {
+  const errEl = document.getElementById('processErr');
+  if (!errEl) return;
+  const msg = payload?.message
+    || (payload?.error === 'spotify_exclusive'
+        ? "This episode is Spotify-exclusive and can't be analyzed. Try a podcast with an RSS feed (Apple Podcasts, RSS link, or direct MP3)."
+        : "We couldn't resolve that podcast. Try the Apple Podcasts URL or a public RSS feed link.");
+  // Use the muted/info color, not danger red — this is informational, not a crash
+  errEl.style.color = 'var(--text-secondary, #a8a29e)';
+  errEl.textContent = msg;
 }
 
 function sanitizeQuiz(analysis) {

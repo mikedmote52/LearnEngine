@@ -774,20 +774,118 @@ def _rss_episodes(root):
     return out
 
 
-def _scrape_og_title(url):
-    """Best-effort: pull og:title from the page (used for Spotify show pages)."""
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+)
+
+
+def _scrape_og_meta(url):
+    """Pull og:title and og:description from a page. Spotify episode pages include
+    the show name in og:description as 'Show Name · Episode'. Returns dict or {}."""
     try:
-        raw = _http_get(url, headers={"User-Agent": USER_AGENT}, timeout=10, max_bytes=300_000)
+        raw = _http_get(url, headers={"User-Agent": _BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"},
+                        timeout=10, max_bytes=400_000)
         text = raw.decode("utf-8", errors="ignore")
     except Exception:
-        return None
+        return {}
+    out = {}
     m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', text, flags=re.I)
     if m:
-        return m.group(1)
-    m = re.search(r'<title>([^<]+)</title>', text, flags=re.I)
+        out["og_title"] = m.group(1)
+    m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', text, flags=re.I)
     if m:
-        return m.group(1).strip()
-    return None
+        out["og_description"] = m.group(1)
+    if "og_title" not in out:
+        m = re.search(r'<title>([^<]+)</title>', text, flags=re.I)
+        if m:
+            out["og_title"] = m.group(1).strip()
+    return out
+
+
+def _scrape_og_title(url):
+    """Backwards-compatible single-field helper."""
+    return (_scrape_og_meta(url) or {}).get("og_title")
+
+
+def _spotify_oembed(url):
+    """Use Spotify's public oEmbed endpoint for reliable episode/show titles.
+    Returns dict with at least {'title': ...} or None on failure."""
+    try:
+        oembed_url = "https://open.spotify.com/oembed?url=" + urllib.parse.quote(url, safe=":/?&=")
+        raw = _http_get(oembed_url, headers={"User-Agent": _BROWSER_UA}, timeout=10, max_bytes=200_000)
+        return json.loads(raw.decode("utf-8", errors="ignore"))
+    except Exception:
+        return None
+
+
+def _spotify_resolve(url):
+    """Resolve an open.spotify.com episode/show URL to {feed_url, episode, show_title}.
+    Tries oEmbed (reliable) + og:description (carries 'Show · Episode'), then
+    iTunes Search to locate the public RSS feed. Raises ValueError with
+    EXCLUSIVE_NO_RSS code if no public RSS path can be found."""
+    oembed = _spotify_oembed(url) or {}
+    meta = _scrape_og_meta(url) or {}
+    episode_title = (oembed.get("title") or meta.get("og_title") or "").strip()
+    # og:description on Spotify episodes is reliably "Show Name · Episode"
+    show_name = ""
+    desc = (meta.get("og_description") or "").strip()
+    if desc and ("·" in desc or " - " in desc.lower()):
+        # Split on the middle-dot first; iOS sometimes substitutes other separators
+        parts = re.split(r"\s*[·•|]\s*", desc, maxsplit=1)
+        if parts and parts[0]:
+            show_name = parts[0].strip()
+    # Also check for "Show on Spotify" pattern in og:title for show URLs
+    if not show_name and episode_title:
+        m = re.match(r"^(.*?)\s*[-|]\s*(?:Listen on Spotify|Podcast on Spotify|Spotify)\s*$", episode_title, flags=re.I)
+        if m:
+            show_name = m.group(1).strip()
+    if not (episode_title or show_name):
+        raise ValueError({"code": "EXCLUSIVE_NO_RSS", "msg": "Spotify page is not publicly readable"})
+    # Search iTunes by show name (preferred) then by episode title (fallback)
+    queries = []
+    if show_name:
+        queries.append(show_name)
+    if episode_title and episode_title not in queries:
+        queries.append(episode_title)
+    seen_feeds = set()
+    last_err = None
+    for q in queries:
+        try:
+            candidates = _itunes_search_by_name(q, limit=5)
+        except Exception as e:
+            last_err = e
+            continue
+        for cand in candidates:
+            feed = cand.get("feedUrl")
+            if not feed or feed in seen_feeds:
+                continue
+            seen_feeds.add(feed)
+            try:
+                root = _fetch_rss(feed)
+                eps = _rss_episodes(root)
+            except Exception as e:
+                last_err = e
+                continue
+            if not eps:
+                continue
+            # Try strict title match, then substring match using strongest title we have
+            target = (episode_title or "").lower()
+            match = None
+            if target:
+                match = next((e for e in eps if (e["title"] or "").strip().lower() == target), None)
+                if not match:
+                    match = next((e for e in eps if target in (e["title"] or "").lower()), None)
+            episode = match or eps[0]
+            return {
+                "feed_url": feed,
+                "episode": episode,
+                "show_title": cand.get("collectionName") or show_name or "",
+            }
+    raise ValueError({
+        "code": "EXCLUSIVE_NO_RSS",
+        "msg": "appears to be a Spotify exclusive — no public RSS feed found",
+    })
 
 
 def resolve_podcast(url):
@@ -847,28 +945,7 @@ def resolve_podcast(url):
 
     # Spotify (only the canonical web app domain — not CDN subdomains like byspotify.com)
     if "open.spotify.com" in lower:
-        # Best-effort: get show title from og:title, then iTunes search
-        og = _scrape_og_title(url)
-        if not og:
-            raise ValueError({"code": "EXCLUSIVE_NO_RSS", "msg": "Spotify page is not publicly readable"})
-        # Strip Spotify-page suffixes ("| Podcast on Spotify", "- Listen on Spotify", etc.)
-        clean = re.sub(r"\s*[-|]\s*(Listen on Spotify|Podcast on Spotify|Spotify).*$", "", og, flags=re.I).strip()
-        clean = re.sub(r"\s+", " ", clean).strip()
-        # If this looks like an episode title vs show, try a few searches
-        candidates = _itunes_search_by_name(clean, limit=3)
-        for cand in candidates:
-            feed = cand.get("feedUrl")
-            if feed:
-                try:
-                    root = _fetch_rss(feed)
-                    eps = _rss_episodes(root)
-                    if eps:
-                        # Try to match episode by title fragment from og
-                        match = next((e for e in eps if clean.lower() in (e["title"] or "").lower()), eps[0])
-                        return {"feed_url": feed, "episode": match, "show_title": cand.get("collectionName") or clean}
-                except Exception:
-                    continue
-        raise ValueError({"code": "EXCLUSIVE_NO_RSS", "msg": "appears to be a Spotify exclusive — no public RSS feed found"})
+        return _spotify_resolve(url)
 
     # Default: try treating it as an RSS feed
     try:
@@ -1060,11 +1137,28 @@ def analyze_podcast_route():
     except ValueError as ve:
         payload = ve.args[0] if ve.args and isinstance(ve.args[0], dict) else None
         if payload and payload.get("code") == "EXCLUSIVE_NO_RSS":
+            is_spotify = "open.spotify.com" in (url or "").lower()
+            if is_spotify:
+                return jsonify({
+                    "error": "spotify_exclusive",
+                    "message": "This episode is Spotify-exclusive and can't be analyzed. "
+                               "Try a podcast with an RSS feed (Apple Podcasts, RSS link, "
+                               "or direct MP3).",
+                    "reason": payload.get("msg", "no public RSS feed found"),
+                }), 422
             return jsonify({
                 "error": "podcast_not_resolvable",
+                "message": "We couldn't find a public RSS feed for this podcast. Try the "
+                           "Apple Podcasts URL, the show's RSS feed link, or a direct "
+                           "MP3 link.",
                 "reason": payload.get("msg", "no public RSS feed found"),
             }), 422
-        return jsonify({"error": "podcast_not_resolvable", "reason": str(ve)}), 422
+        return jsonify({
+            "error": "podcast_not_resolvable",
+            "message": "We couldn't resolve that podcast URL. Try the Apple Podcasts URL "
+                       "or the show's RSS feed link.",
+            "reason": str(ve),
+        }), 422
 
     episode = info["episode"]
     show = info.get("show_title", "")
