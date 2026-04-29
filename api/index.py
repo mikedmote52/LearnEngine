@@ -950,7 +950,10 @@ def analyze_youtube_route():
                 "video_id": video_id,
                 "model_used": model_used,
             }), 500
-        analysis["quiz"] = _sanitize_quiz_list(analysis.get("quiz") or [])
+        # Cap to requested count — Gemini occasionally overshoots when the
+        # prompt says "exactly N", and users asked for N, not N+5.
+        cleaned = _sanitize_quiz_list(analysis.get("quiz") or [])
+        analysis["quiz"] = cleaned[:question_count]
     else:
         # Batched path: parallel calls of QC_BATCH_SIZE, dedupe via embeddings
         def build_prompt_batched(per_count, focus_text):
@@ -975,6 +978,12 @@ def analyze_youtube_route():
                 "batches_run": result["batches_run"],
                 "batches_ok": result["batches_ok"],
             }), 502
+        # If we got SOMETHING but fewer than requested (e.g., partial batch
+        # failure), expose that in the response so the client can show
+        # "got 37 of 50 — one batch hiccuped" rather than silently
+        # under-delivering. We still return 200 since the partial quiz is
+        # useful.
+        analysis["quiz"] = (analysis.get("quiz") or [])[:question_count]
 
     # Spec aliases (keeps endpoint compatible with both client renderer and spec)
     analysis["concepts"] = analysis.get("key_concepts", [])
@@ -1567,7 +1576,8 @@ def analyze_podcast_route():
                 "raw_excerpt": text[:1500],
                 "model_used": model_used,
             }), 500
-        analysis["quiz"] = _sanitize_quiz_list(analysis.get("quiz") or [])
+        cleaned = _sanitize_quiz_list(analysis.get("quiz") or [])
+        analysis["quiz"] = cleaned[:question_count]
     else:
         def build_prompt_batched(per_count, focus_text):
             return _podcast_quiz_prompt(
@@ -1585,10 +1595,12 @@ def analyze_podcast_route():
             return jsonify({
                 "error": "Batched audio analysis returned no usable questions.",
                 "details": errors[:8],
+                "raw_excerpts": result.get("raw_excerpts", [])[:6],
                 "audio_url": audio_url,
                 "batches_run": result["batches_run"],
                 "batches_ok": result["batches_ok"],
             }), 502
+        analysis["quiz"] = (analysis.get("quiz") or [])[:question_count]
 
     analysis["concepts"] = analysis.get("key_concepts", [])
     analysis["fact_checks"] = analysis.get("fact_check", [])
@@ -1770,7 +1782,8 @@ def analyze_book_chapter_route():
                 "raw_excerpt": text[:1500],
                 "model_used": model_used,
             }), 500
-        analysis["quiz"] = _sanitize_quiz_list(analysis.get("quiz") or [])
+        cleaned = _sanitize_quiz_list(analysis.get("quiz") or [])
+        analysis["quiz"] = cleaned[:question_count]
     else:
         def build_prompt_batched(per_count, focus_text):
             return _book_prompt(chapter_title, question_count=per_count, batch_focus=focus_text)
@@ -1784,9 +1797,11 @@ def analyze_book_chapter_route():
             return jsonify({
                 "error": "Batched book analysis returned no usable questions.",
                 "details": errors[:8],
+                "raw_excerpts": result.get("raw_excerpts", [])[:6],
                 "batches_run": result["batches_run"],
                 "batches_ok": result["batches_ok"],
             }), 502
+        analysis["quiz"] = (analysis.get("quiz") or [])[:question_count]
 
     analysis["concepts"] = analysis.get("key_concepts", [])
     analysis["fact_checks"] = analysis.get("fact_check", [])
