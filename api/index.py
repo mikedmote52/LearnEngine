@@ -189,6 +189,254 @@ def extract_video_id(url):
     raise ValueError("Could not extract video ID from: " + url)
 
 
+# ============== Question-count + batching helpers ==============
+# All three analyze endpoints accept a `question_count` field. Default 15
+# (matches legacy behavior). Range 5-100 inclusive. Counts above
+# QC_BATCH_THRESHOLD are split into parallel batches of QC_BATCH_SIZE,
+# then de-duplicated by question-stem embedding similarity.
+
+QC_DEFAULT = 15
+QC_MIN = 5
+QC_MAX = 100
+QC_BATCH_THRESHOLD = 30   # counts strictly greater are batched
+QC_BATCH_SIZE = 25        # questions requested per batch
+QC_DEDUP_THRESHOLD = 0.92 # cosine sim >= this between question stems => duplicate
+
+
+def _normalize_question_count(raw, default=QC_DEFAULT):
+    """Parse + validate an inbound question_count value.
+    Returns (count, error_msg). If raw is None/missing, returns (default, None)
+    so existing clients continue to behave exactly as before."""
+    if raw is None or raw == "":
+        return default, None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None, ("question_count must be an integer between "
+                      + str(QC_MIN) + " and " + str(QC_MAX))
+    if n < QC_MIN:
+        return None, ("question_count must be at least " + str(QC_MIN)
+                      + " (got " + str(n) + ")")
+    if n > QC_MAX:
+        return None, ("question_count must be at most " + str(QC_MAX)
+                      + " (got " + str(n) + ")")
+    return n, None
+
+
+def _quiz_size_directive(count, content_kind="content"):
+    """Build the per-prompt RULES line that pins the requested question count.
+    For counts >= 50 we explicitly demand distinct concepts to prevent the
+    model from filling space with near-paraphrases."""
+    line = ("- Generate exactly " + str(count)
+            + " quiz questions covering the most important concepts from this "
+            + content_kind + ". Mix Bloom levels: 20% remember, 30% understand, "
+            "25% apply, 15% analyze, 10% evaluate.")
+    if count >= 50:
+        line += (" Ensure each question tests a distinct concept — "
+                 "no repetition or near-paraphrases of other questions.")
+    return line
+
+
+# Per-batch focus seeds — bias each parallel batch toward a different angle so
+# we maximize coverage before the embedding-dedup pass collapses overlaps.
+_BATCH_FOCUS_SEEDS = [
+    "BATCH FOCUS: definitions, fundamental claims, and core terminology "
+    "(skew toward Bloom: remember + understand).",
+    "BATCH FOCUS: application, worked examples, and how concepts operate in "
+    "practice (skew toward Bloom: apply + analyze).",
+    "BATCH FOCUS: evaluation, trade-offs, comparisons, and synthesis across "
+    "concepts (skew toward Bloom: analyze + evaluate).",
+    "BATCH FOCUS: edge cases, nuanced details, counter-examples, and "
+    "connections to broader related topics.",
+]
+
+
+def _batch_focus_for(i):
+    return _BATCH_FOCUS_SEEDS[i % len(_BATCH_FOCUS_SEEDS)]
+
+
+def _max_tokens_for_count(count):
+    """Output-token budget that scales with question count.
+    ~600 tokens per question gives plenty of headroom for the 4-option
+    schema with explanations. Capped at 60k (Gemini Flash output cap)."""
+    return max(8000, min(60000, count * 600))
+
+
+def _embed_strings(inputs):
+    """Embed a list of strings via OpenRouter -> openai/text-embedding-3-small.
+    Mirrors /api/embed but usable as an internal helper. Empty/None entries
+    are dropped before embedding; callers must align indices via stems[]."""
+    if not OPENROUTER_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+    cleaned = [s for s in (inputs or []) if isinstance(s, str) and s.strip()]
+    if not cleaned:
+        return []
+    body = json.dumps({"model": EMBED_MODEL, "input": cleaned}).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/embeddings",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + OPENROUTER_KEY,
+            "HTTP-Referer": "https://mikedmote52.github.io/LearnEngine/",
+            "X-Title": "LearnEngine",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read().decode())
+        return [d["embedding"] for d in data["data"]]
+
+
+def _cosine(a, b):
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / ((na ** 0.5) * (nb ** 0.5))
+
+
+def _dedupe_questions_by_embedding(questions, threshold=QC_DEDUP_THRESHOLD):
+    """Greedy dedup: walk in order, drop a question whose stem has cosine
+    similarity >= threshold to any already-kept question. Order-preserving.
+    If embedding fails (e.g., embeddings outage), falls back to a normalized
+    exact-text match so the user still gets a usable, non-duplicate quiz."""
+    if not questions or len(questions) <= 1:
+        return list(questions or [])
+    stems = [((q.get("question") or "") if isinstance(q, dict) else "").strip()
+             for q in questions]
+    try:
+        vecs = _embed_strings(stems)
+    except Exception:
+        vecs = []
+    if not vecs or len(vecs) != len(stems):
+        # Fallback: normalized exact-stem dedup
+        seen = set()
+        kept = []
+        for q, s in zip(questions, stems):
+            key = re.sub(r"\s+", " ", s.lower()).strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            kept.append(q)
+        return kept
+    kept = []
+    kept_vecs = []
+    for q, vec in zip(questions, vecs):
+        if not (q.get("question") or "").strip():
+            continue
+        is_dup = any(_cosine(vec, kv) >= threshold for kv in kept_vecs)
+        if not is_dup:
+            kept.append(q)
+            kept_vecs.append(vec)
+    return kept
+
+
+def _sanitize_quiz_list(quiz):
+    """Drop malformed questions, ensure exactly one correct option, label A/B/C/D.
+    Mirrors the inline sanitization that lived in each route."""
+    cleaned = []
+    if not isinstance(quiz, list):
+        return cleaned
+    for q in quiz:
+        if not isinstance(q, dict):
+            continue
+        opts = q.get("options") or []
+        if not q.get("question") or not opts:
+            continue
+        correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
+        if correct_count == 0:
+            continue
+        if correct_count > 1:
+            seen_correct = False
+            for o in opts:
+                if isinstance(o, dict) and o.get("correct"):
+                    if seen_correct:
+                        o["correct"] = False
+                    else:
+                        seen_correct = True
+        for idx, o in enumerate(opts):
+            if isinstance(o, dict) and not o.get("label"):
+                o["label"] = chr(65 + idx)
+        cleaned.append(q)
+    return cleaned
+
+
+def _generate_quiz_in_batches(build_prompt, call_one, count):
+    """Run N parallel Gemini calls of QC_BATCH_SIZE questions each, then
+    merge + dedupe + truncate to `count`.
+
+    Args:
+      build_prompt(per_batch_count, batch_focus_text) -> prompt string
+      call_one(prompt, max_tokens) -> (text, fmt_used, model_used)
+        Raises RuntimeError on failure. Caller is responsible for fallback
+        across Gemini Flash/Pro and OpenRouter/direct shapes.
+      count: total target question count (must be > QC_BATCH_THRESHOLD)
+
+    Returns:
+      dict: { questions, errors, fmt_used, model_used, batches_run, batches_ok }
+    """
+    # Number of batches sized so the union (after dedup) overshoots `count` a
+    # little; we target ceil(count / QC_BATCH_SIZE) batches per the spec.
+    n_batches = max(1, (count + QC_BATCH_SIZE - 1) // QC_BATCH_SIZE)
+    per_batch = QC_BATCH_SIZE
+    max_tokens = _max_tokens_for_count(per_batch)
+
+    def run_one(i):
+        prompt = build_prompt(per_batch, _batch_focus_for(i))
+        return call_one(prompt, max_tokens)
+
+    batch_results = []
+    errors = []
+    fmt_used = None
+    model_used = None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, n_batches)) as ex:
+        futures = [ex.submit(run_one, i) for i in range(n_batches)]
+        for i, fut in enumerate(futures):
+            try:
+                text, fmt, model = fut.result(timeout=270)
+            except Exception as e:
+                errors.append("batch " + str(i + 1) + ": " + str(e))
+                continue
+            try:
+                payload = parse_json_response(text)
+            except json.JSONDecodeError as e:
+                errors.append("batch " + str(i + 1) + " parse: " + str(e))
+                continue
+            qs = _sanitize_quiz_list(payload.get("quiz") or [])
+            batch_results.append({"i": i, "payload": payload, "questions": qs})
+            if fmt_used is None:
+                fmt_used = fmt
+                model_used = model
+
+    # Merge in batch order so the per-batch focus rotation distributes types
+    merged = []
+    for br in batch_results:
+        merged.extend(br["questions"])
+
+    deduped = _dedupe_questions_by_embedding(merged)
+    truncated = deduped[:count]
+
+    # Use the first successful batch's payload for top-level analysis fields
+    # (summary, key_concepts, fact_check, etc.). They're roughly equivalent
+    # across batches because they all watched the same content.
+    base_payload = batch_results[0]["payload"] if batch_results else {}
+    base_payload["quiz"] = truncated
+
+    return {
+        "payload": base_payload,
+        "errors": errors,
+        "fmt_used": fmt_used,
+        "model_used": model_used,
+        "batches_run": n_batches,
+        "batches_ok": len(batch_results),
+    }
+
+
 # ============== Routes ==============
 
 @app.route("/api/health")
@@ -479,52 +727,18 @@ def analyze_route():
 # fact-checks, and a quiz in a single call. The pasted-transcript flow at
 # /api/analyze remains as a manual fallback.
 
-@app.route("/api/analyze-youtube", methods=["POST"])
-def analyze_youtube_route():
-    data = request.get_json(silent=True) or {}
-    youtube_url = (data.get("youtube_url") or data.get("url") or "").strip()
-    options = data.get("options") or {}
-
-    if not youtube_url:
-        return jsonify({"error": "youtube_url is required"}), 400
-
-    try:
-        video_id = extract_video_id(youtube_url)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
-    canonical_url = "https://www.youtube.com/watch?v=" + video_id
-
-    # In-memory cache hit
-    if video_id in _YT_CACHE:
-        cached = dict(_YT_CACHE[video_id])
-        cached["cached"] = True
-        return jsonify(cached)
-
-    learner_context = options.get("learner_context") or {}
-    title_hint = (options.get("title") or "").strip()
-
-    learner_section = ""
-    if learner_context:
-        style = learner_context.get("learning_style") or {}
-        teaching_mode = style.get("teaching_mode", "scaffolded")
-        weak = learner_context.get("weak_areas") or []
-        accuracy = learner_context.get("overall_accuracy", 50)
-        learner_section = (
-            "\nLEARNER PROFILE:\n"
-            "- Accuracy: " + str(accuracy) + "%, Mode: " + teaching_mode + ", "
-            "Weak: " + (", ".join(weak) if weak else "None") + "\n"
-            "- foundational: simpler language, analogies. "
-            "scaffolded: sequential questions. "
-            "challenging: synthesis questions.\n"
-        )
-
-    prompt = (
+def _build_youtube_prompt(question_count, learner_section, title_hint, batch_focus=None):
+    """Build the YouTube analysis prompt for a given question count.
+    `batch_focus` is non-None for batched calls (count > QC_BATCH_THRESHOLD)
+    and biases the batch toward a particular angle for diversity."""
+    focus_block = ("\n" + batch_focus + "\n") if batch_focus else ""
+    return (
         "You are an expert educational content designer. Watch the YouTube video "
         "provided as input, understand its substantive content (concepts, claims, "
         "arguments, examples, evidence), and produce a structured learning analysis."
         + learner_section
         + ("\nVIDEO TITLE HINT: " + title_hint + "\n" if title_hint else "")
+        + focus_block
         + "\n"
         "Respond with COMPACT JSON only — no markdown fences, no prose before/after.\n\n"
         "{\n"
@@ -561,8 +775,7 @@ def analyze_youtube_route():
         "RULES:\n"
         "- 5-8 key_concepts. Each explanation under 30 words.\n"
         "- 3-6 fact_check items: specific dates, statistics, named entities, causal claims.\n"
-        "- 8-12 quiz questions covering the substantive content. Mix Bloom levels: "
-        "20% remember, 30% understand, 25% apply, 15% analyze, 10% evaluate.\n"
+        + _quiz_size_directive(question_count, "video") + "\n"
         "- Wrong options must be REAL misconceptions, never obviously wrong.\n"
         "- Exactly ONE option per question has \"correct\": true.\n"
         "- Every correct answer must be verifiable from the video content.\n"
@@ -570,81 +783,131 @@ def analyze_youtube_route():
         "- Output JSON only — no markdown, no prose, no commentary."
     )
 
-    text = None
+
+@app.route("/api/analyze-youtube", methods=["POST"])
+def analyze_youtube_route():
+    t_start = time.time()
+    data = request.get_json(silent=True) or {}
+    youtube_url = (data.get("youtube_url") or data.get("url") or "").strip()
+    options = data.get("options") or {}
+
+    if not youtube_url:
+        return jsonify({"error": "youtube_url is required"}), 400
+
+    # question_count: optional; missing -> default 15 (legacy behavior)
+    raw_count = data.get("question_count")
+    if raw_count is None:
+        raw_count = options.get("question_count")
+    question_count, qc_err = _normalize_question_count(raw_count)
+    if qc_err:
+        return jsonify({"error": qc_err}), 400
+
+    try:
+        video_id = extract_video_id(youtube_url)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    canonical_url = "https://www.youtube.com/watch?v=" + video_id
+
+    # In-memory cache hit (keyed by video + count so 50 vs 15 don't collide)
+    cache_key = video_id + ":" + str(question_count)
+    if cache_key in _YT_CACHE:
+        cached = dict(_YT_CACHE[cache_key])
+        cached["cached"] = True
+        cached["processing_seconds"] = round(time.time() - t_start, 2)
+        return jsonify(cached)
+
+    learner_context = options.get("learner_context") or {}
+    title_hint = (options.get("title") or "").strip()
+
+    learner_section = ""
+    if learner_context:
+        style = learner_context.get("learning_style") or {}
+        teaching_mode = style.get("teaching_mode", "scaffolded")
+        weak = learner_context.get("weak_areas") or []
+        accuracy = learner_context.get("overall_accuracy", 50)
+        learner_section = (
+            "\nLEARNER PROFILE:\n"
+            "- Accuracy: " + str(accuracy) + "%, Mode: " + teaching_mode + ", "
+            "Weak: " + (", ".join(weak) if weak else "None") + "\n"
+            "- foundational: simpler language, analogies. "
+            "scaffolded: sequential questions. "
+            "challenging: synthesis questions.\n"
+        )
+
+    def call_one(prompt, max_tokens):
+        """Single Gemini video call with Flash -> Pro -> direct fallback chain.
+        Returns (text, fmt_used, model_used). Raises RuntimeError if all fail."""
+        attempt_errs = []
+        for model in (GEMINI_FLASH, GEMINI_PRO):
+            try:
+                return _gemini_youtube_call(
+                    prompt, canonical_url, model=model,
+                    max_tokens=max_tokens, timeout=270,
+                )
+            except Exception as e:
+                attempt_errs.append(model + ": " + str(e))
+        if GEMINI_API_KEY:
+            for model in (GEMINI_FLASH, GEMINI_PRO):
+                try:
+                    return _gemini_direct_call(
+                        prompt, canonical_url, model_id=model, timeout=270,
+                    )
+                except Exception as e:
+                    attempt_errs.append("direct " + model + ": " + str(e))
+        raise RuntimeError("; ".join(attempt_errs) or "all video formats failed")
+
     fmt_used = None
     model_used = None
     errors = []
+    batch_meta = None
 
-    # Try OpenRouter -> gemini-2.5-flash, then -> gemini-2.5-pro.
-    # Long videos can need 90s+ so we allow generous per-call timeouts; the
-    # Vercel function maxDuration is set to 300s in vercel.json.
-    for model in (GEMINI_FLASH, GEMINI_PRO):
+    if question_count <= QC_BATCH_THRESHOLD:
+        # Single call path — preserves legacy behavior for default count of 15
+        prompt = _build_youtube_prompt(question_count, learner_section, title_hint)
         try:
-            text, fmt_used, model_used = _gemini_youtube_call(
-                prompt, canonical_url, model=model, max_tokens=12000, timeout=240
-            )
-            break
+            text, fmt_used, model_used = call_one(prompt, _max_tokens_for_count(question_count))
         except Exception as e:
-            errors.append(str(e))
-            continue
+            return jsonify({
+                "error": "Gemini video analysis failed across all model+format combinations.",
+                "details": [str(e)],
+                "video_id": video_id,
+            }), 502
+        try:
+            analysis = parse_json_response(text)
+        except json.JSONDecodeError as e:
+            return jsonify({
+                "error": "Gemini returned non-JSON output: " + str(e),
+                "raw_excerpt": text[:1500],
+                "video_id": video_id,
+                "model_used": model_used,
+            }), 500
+        analysis["quiz"] = _sanitize_quiz_list(analysis.get("quiz") or [])
+    else:
+        # Batched path: parallel calls of QC_BATCH_SIZE, dedupe via embeddings
+        def build_prompt_batched(per_count, focus_text):
+            return _build_youtube_prompt(per_count, learner_section, title_hint,
+                                         batch_focus=focus_text)
 
-    # Direct Google Gemini API fallback (only if GEMINI_API_KEY is configured)
-    if not text and GEMINI_API_KEY:
-        for model in (GEMINI_FLASH, GEMINI_PRO):
-            try:
-                text, fmt_used, model_used = _gemini_direct_call(
-                    prompt, canonical_url, model_id=model, timeout=240
-                )
-                break
-            except Exception as e:
-                errors.append(str(e))
-                continue
+        result = _generate_quiz_in_batches(build_prompt_batched, call_one, question_count)
+        analysis = result["payload"] or {}
+        fmt_used = result["fmt_used"]
+        model_used = result["model_used"]
+        errors = result["errors"]
+        batch_meta = {
+            "batches_run": result["batches_run"],
+            "batches_ok": result["batches_ok"],
+        }
+        if not analysis.get("quiz"):
+            return jsonify({
+                "error": "Batched video analysis returned no usable questions.",
+                "details": errors[:8],
+                "video_id": video_id,
+                "batches_run": result["batches_run"],
+                "batches_ok": result["batches_ok"],
+            }), 502
 
-    if not text:
-        return jsonify({
-            "error": "Gemini video analysis failed across all model+format combinations.",
-            "details": errors,
-            "video_id": video_id,
-        }), 502
-
-    try:
-        analysis = parse_json_response(text)
-    except json.JSONDecodeError as e:
-        return jsonify({
-            "error": "Gemini returned non-JSON output: " + str(e),
-            "raw_excerpt": text[:1500],
-            "video_id": video_id,
-            "model_used": model_used,
-        }), 500
-
-    # Sanitize quiz: keep only well-formed questions, ensure exactly one correct.
-    if isinstance(analysis.get("quiz"), list):
-        cleaned = []
-        for q in analysis["quiz"]:
-            if not isinstance(q, dict):
-                continue
-            opts = q.get("options") or []
-            if not q.get("question") or not opts:
-                continue
-            correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
-            if correct_count == 0:
-                continue
-            if correct_count > 1:
-                found = False
-                for o in opts:
-                    if isinstance(o, dict) and o.get("correct"):
-                        if found:
-                            o["correct"] = False
-                        else:
-                            found = True
-            for idx, o in enumerate(opts):
-                if isinstance(o, dict) and not o.get("label"):
-                    o["label"] = chr(65 + idx)
-            cleaned.append(q)
-        analysis["quiz"] = cleaned
-
-    # Spec aliases (keeps the new endpoint compatible with both the existing
-    # client renderer and the spec's preferred field names).
+    # Spec aliases (keeps endpoint compatible with both client renderer and spec)
     analysis["concepts"] = analysis.get("key_concepts", [])
     analysis["fact_checks"] = analysis.get("fact_check", [])
     if "difficulty_score" not in analysis or not isinstance(analysis.get("difficulty_score"), (int, float)):
@@ -673,6 +936,13 @@ def analyze_youtube_route():
     analysis["video_id"] = video_id
     analysis["model_used"] = model_used
     analysis["format_used"] = fmt_used
+    analysis["requested_count"] = question_count
+    analysis["returned_count"] = len(analysis.get("quiz") or [])
+    analysis["processing_seconds"] = round(time.time() - t_start, 2)
+    if batch_meta:
+        analysis["batch_meta"] = batch_meta
+    if errors:
+        analysis["batch_warnings"] = errors[:5]
 
     # LRU-ish cache eviction
     if len(_YT_CACHE) >= _YT_CACHE_MAX:
@@ -680,7 +950,7 @@ def analyze_youtube_route():
             _YT_CACHE.pop(next(iter(_YT_CACHE)))
         except StopIteration:
             pass
-    _YT_CACHE[video_id] = analysis
+    _YT_CACHE[cache_key] = analysis
 
     return jsonify(analysis)
 
@@ -989,22 +1259,13 @@ def _download_audio_capped(audio_url, cap_bytes=AUDIO_CAP_BYTES, hard_cap=AUDIO_
         return b"".join(chunks), truncated, seen
 
 
-def _gemini_audio_call(prompt, audio_url, model, timeout=240, max_tokens=12000):
-    """Call OpenRouter -> Gemini with audio bytes (base64 inline).
-    Audio is downloaded server-side and capped at AUDIO_CAP_BYTES so we stay
-    under Gemini's inline-data request limit (~20 MB). For long episodes the
-    first ~30-45 minutes of content is analyzed.
-    Returns (text, format_used).
-    """
-    if not OPENROUTER_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY not set")
-
-    # Download audio (capped)
+def _prep_audio(audio_url):
+    """Download audio once, return (audio_bytes, mime, truncation_note).
+    Raises RuntimeError on empty/failed download. The bytes can be reused
+    across multiple Gemini batch calls without re-downloading."""
     audio_bytes, truncated, total = _download_audio_capped(audio_url)
     if not audio_bytes:
         raise RuntimeError("audio download produced 0 bytes")
-
-    # Detect MIME from URL extension; default to mpeg
     lower = audio_url.lower().split("?")[0]
     if lower.endswith(".m4a"):
         mime = "audio/mp4"
@@ -1014,32 +1275,37 @@ def _gemini_audio_call(prompt, audio_url, model, timeout=240, max_tokens=12000):
         mime = "audio/ogg"
     else:
         mime = "audio/mpeg"
-
-    b64 = base64.b64encode(audio_bytes).decode("ascii")
-    data_uri = "data:" + mime + ";base64," + b64
-
     note = ""
     if truncated:
         note = ("\n\n[Note: episode is large; analyzing the first ~"
                 + str(round(len(audio_bytes) / 1_000_000)) + "MB of audio "
                 "out of ~" + str(round(total / 1_000_000)) + "MB total. "
                 "Focus on the substantive content covered in this portion.]")
+    return audio_bytes, mime, note
 
-    # Two content shapes — try Google-native file_data first, fall back to OpenAI input_audio
+
+def _gemini_audio_call_with_data(prompt, audio_bytes, mime, note, model,
+                                 timeout=240, max_tokens=12000):
+    """Call OpenRouter -> Gemini with already-downloaded audio bytes.
+    Returns (text, format_used). Two content shapes are attempted in order."""
+    if not OPENROUTER_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+    data_uri = "data:" + mime + ";base64," + b64
     formats = [
         ("file_data_inline", [
-            {"type": "text", "text": prompt + note},
+            {"type": "text", "text": prompt + (note or "")},
             {"type": "file", "file": {"file_data": data_uri, "mime_type": mime}},
         ]),
         ("input_audio", [
-            {"type": "text", "text": prompt + note},
+            {"type": "text", "text": prompt + (note or "")},
             {"type": "input_audio", "input_audio": {"data": b64, "format": mime.split("/")[-1]}},
         ]),
     ]
-
     errors = []
     for fmt_name, content in formats:
-        payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
+        payload = {"model": model, "max_tokens": max_tokens,
+                   "messages": [{"role": "user", "content": content}]}
         body = json.dumps(payload).encode()
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -1067,17 +1333,29 @@ def _gemini_audio_call(prompt, audio_url, model, timeout=240, max_tokens=12000):
             errors.append(fmt_name + ": HTTP " + str(e.code) + ": " + err_body)
         except Exception as e:
             errors.append(fmt_name + ": " + type(e).__name__ + ": " + str(e))
-
     raise RuntimeError("; ".join(errors) or "all audio formats failed")
 
 
-def _podcast_quiz_prompt(episode_title, show_title):
+def _gemini_audio_call(prompt, audio_url, model, timeout=240, max_tokens=12000):
+    """Backwards-compatible single-shot wrapper that downloads + calls.
+    For batched flows use _prep_audio + _gemini_audio_call_with_data so the
+    download isn't repeated per batch."""
+    audio_bytes, mime, note = _prep_audio(audio_url)
+    return _gemini_audio_call_with_data(
+        prompt, audio_bytes, mime, note, model,
+        timeout=timeout, max_tokens=max_tokens,
+    )
+
+
+def _podcast_quiz_prompt(episode_title, show_title, question_count=QC_DEFAULT, batch_focus=None):
     title_hint = (episode_title or "") + (" — " + show_title if show_title else "")
+    focus_block = ("\n" + batch_focus + "\n") if batch_focus else ""
     return (
         "You are an expert educational content designer. Listen to the podcast audio "
         "provided as input. Identify the substantive content (concepts, claims, "
         "arguments, examples, evidence) and produce a structured learning analysis.\n\n"
         + ("EPISODE: " + title_hint + "\n\n" if title_hint else "")
+        + focus_block
         + "Respond with COMPACT JSON only — no markdown fences, no prose before/after.\n\n"
         "{\n"
         '  "summary": "3-4 sentence summary of the episode",\n'
@@ -1112,7 +1390,7 @@ def _podcast_quiz_prompt(episode_title, show_title):
         "RULES:\n"
         "- 5-8 key_concepts, each explanation under 30 words.\n"
         "- 3-6 fact_check items: dates, statistics, named entities, causal claims.\n"
-        "- 8-12 quiz questions covering substantive content. Mix Bloom levels.\n"
+        + _quiz_size_directive(question_count, "episode") + "\n"
         "- Wrong options must be REAL plausible misconceptions.\n"
         "- Exactly ONE option per question has \"correct\": true.\n"
         "- Output JSON only — no markdown, no prose, no commentary."
@@ -1121,15 +1399,25 @@ def _podcast_quiz_prompt(episode_title, show_title):
 
 @app.route("/api/analyze-podcast", methods=["POST"])
 def analyze_podcast_route():
+    t_start = time.time()
     data = request.get_json(silent=True) or {}
     url = (data.get("url") or "").strip()
+    options = data.get("options") or {}
     if not url:
         return jsonify({"error": "url is required"}), 400
 
-    cache_key = url.split("?")[0][:200]
+    raw_count = data.get("question_count")
+    if raw_count is None:
+        raw_count = options.get("question_count")
+    question_count, qc_err = _normalize_question_count(raw_count)
+    if qc_err:
+        return jsonify({"error": qc_err}), 400
+
+    cache_key = url.split("?")[0][:200] + ":" + str(question_count)
     if cache_key in _PODCAST_CACHE:
         cached = dict(_PODCAST_CACHE[cache_key])
         cached["cached"] = True
+        cached["processing_seconds"] = round(time.time() - t_start, 2)
         return jsonify(cached)
 
     try:
@@ -1163,62 +1451,75 @@ def analyze_podcast_route():
     episode = info["episode"]
     show = info.get("show_title", "")
     audio_url = episode["audio_url"]
-    prompt = _podcast_quiz_prompt(episode.get("title", ""), show)
 
-    text = None
-    fmt_used = None
-    model_used = None
-    errors = []
-    for model in (GEMINI_FLASH, GEMINI_PRO):
-        try:
-            text, fmt_used = _gemini_audio_call(prompt, audio_url, model=model, timeout=240)
-            model_used = model
-            break
-        except Exception as e:
-            errors.append(model + ": " + str(e))
-            continue
-
-    if not text:
+    # Download audio once and reuse across batches (avoids 4x bandwidth + RAM
+    # blow-up on Vercel for batched 100-question runs).
+    try:
+        audio_bytes, mime, note = _prep_audio(audio_url)
+    except Exception as e:
         return jsonify({
-            "error": "Audio analysis failed across all model attempts.",
-            "details": errors[:5],
+            "error": "Failed to download podcast audio: " + str(e),
             "audio_url": audio_url,
         }), 502
 
-    try:
-        analysis = parse_json_response(text)
-    except json.JSONDecodeError as e:
-        return jsonify({
-            "error": "Gemini returned non-JSON output: " + str(e),
-            "raw_excerpt": text[:1500],
-            "model_used": model_used,
-        }), 500
+    def call_one(prompt, max_tokens):
+        attempt_errs = []
+        for model in (GEMINI_FLASH, GEMINI_PRO):
+            try:
+                text, fmt = _gemini_audio_call_with_data(
+                    prompt, audio_bytes, mime, note, model,
+                    timeout=270, max_tokens=max_tokens,
+                )
+                return text, fmt, model
+            except Exception as e:
+                attempt_errs.append(model + ": " + str(e))
+        raise RuntimeError("; ".join(attempt_errs) or "all audio formats failed")
 
-    # Sanitize quiz the same way YouTube does
-    if isinstance(analysis.get("quiz"), list):
-        cleaned = []
-        for q in analysis["quiz"]:
-            if not isinstance(q, dict):
-                continue
-            opts = q.get("options") or []
-            if not q.get("question") or not opts:
-                continue
-            correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
-            if correct_count == 0:
-                continue
-            if correct_count > 1:
-                found = False
-                for o in opts:
-                    if isinstance(o, dict) and o.get("correct"):
-                        if found:
-                            o["correct"] = False
-                        else:
-                            found = True
-            for idx, o in enumerate(opts):
-                if isinstance(o, dict) and not o.get("label"):
-                    o["label"] = chr(65 + idx)
-            cleaned.append(q)
-        analysis["quiz"] = cleaned
+    fmt_used = None
+    model_used = None
+    errors = []
+    batch_meta = None
+
+    if question_count <= QC_BATCH_THRESHOLD:
+        prompt = _podcast_quiz_prompt(episode.get("title", ""), show, question_count=question_count)
+        try:
+            text, fmt_used, model_used = call_one(prompt, _max_tokens_for_count(question_count))
+        except Exception as e:
+            return jsonify({
+                "error": "Audio analysis failed across all model attempts.",
+                "details": [str(e)],
+                "audio_url": audio_url,
+            }), 502
+        try:
+            analysis = parse_json_response(text)
+        except json.JSONDecodeError as e:
+            return jsonify({
+                "error": "Gemini returned non-JSON output: " + str(e),
+                "raw_excerpt": text[:1500],
+                "model_used": model_used,
+            }), 500
+        analysis["quiz"] = _sanitize_quiz_list(analysis.get("quiz") or [])
+    else:
+        def build_prompt_batched(per_count, focus_text):
+            return _podcast_quiz_prompt(
+                episode.get("title", ""), show,
+                question_count=per_count, batch_focus=focus_text,
+            )
+
+        result = _generate_quiz_in_batches(build_prompt_batched, call_one, question_count)
+        analysis = result["payload"] or {}
+        fmt_used = result["fmt_used"]
+        model_used = result["model_used"]
+        errors = result["errors"]
+        batch_meta = {"batches_run": result["batches_run"], "batches_ok": result["batches_ok"]}
+        if not analysis.get("quiz"):
+            return jsonify({
+                "error": "Batched audio analysis returned no usable questions.",
+                "details": errors[:8],
+                "audio_url": audio_url,
+                "batches_run": result["batches_run"],
+                "batches_ok": result["batches_ok"],
+            }), 502
 
     analysis["concepts"] = analysis.get("key_concepts", [])
     analysis["fact_checks"] = analysis.get("fact_check", [])
@@ -1229,6 +1530,13 @@ def analyze_podcast_route():
     analysis["feed_url"] = info.get("feed_url")
     analysis["model_used"] = model_used
     analysis["format_used"] = fmt_used
+    analysis["requested_count"] = question_count
+    analysis["returned_count"] = len(analysis.get("quiz") or [])
+    analysis["processing_seconds"] = round(time.time() - t_start, 2)
+    if batch_meta:
+        analysis["batch_meta"] = batch_meta
+    if errors:
+        analysis["batch_warnings"] = errors[:5]
 
     if len(_PODCAST_CACHE) >= _PODCAST_CACHE_MAX:
         try:
@@ -1242,14 +1550,16 @@ def analyze_podcast_route():
 
 # ============== Book chapter analysis (Phase B) ==============
 
-def _book_prompt(chapter_title):
+def _book_prompt(chapter_title, question_count=QC_DEFAULT, batch_focus=None):
     title_line = ("\nCHAPTER TITLE: " + chapter_title + "\n") if chapter_title else "\n"
+    focus_block = ("\n" + batch_focus + "\n") if batch_focus else ""
     return (
         "You are an expert educational content designer. The user has provided "
         "photos of consecutive pages from a book chapter. Read the pages, identify "
         "the substantive content (concepts, claims, arguments, equations, diagrams), "
         "and produce a structured learning analysis."
-        + title_line + "\n"
+        + title_line
+        + focus_block + "\n"
         "Respond with COMPACT JSON only — no markdown fences, no prose before/after.\n\n"
         "{\n"
         '  "summary": "3-4 sentence summary of the chapter content",\n'
@@ -1283,7 +1593,8 @@ def _book_prompt(chapter_title):
         "RULES:\n"
         "- 5-8 key_concepts, each explanation under 30 words.\n"
         "- 3-6 fact_check items: dates, statistics, named entities, causal claims.\n"
-        "- 8-12 quiz questions that REFERENCE the actual chapter content.\n"
+        + _quiz_size_directive(question_count, "chapter") + " "
+        "Every question must REFERENCE actual chapter content.\n"
         "- Wrong options must be plausible misconceptions, not obviously wrong.\n"
         "- Exactly ONE option per question has \"correct\": true.\n"
         "- Output JSON only — no markdown fences, no prose, no commentary."
@@ -1337,70 +1648,76 @@ def _gemini_book_call(prompt, image_data_urls, model, timeout=240, max_tokens=12
 
 @app.route("/api/analyze-book-chapter", methods=["POST"])
 def analyze_book_chapter_route():
+    t_start = time.time()
     data = request.get_json(silent=True) or {}
     images = data.get("images") or []
     chapter_title = (data.get("chapter_title") or "").strip()
+    options = data.get("options") or {}
 
     if not isinstance(images, list) or not images:
         return jsonify({"error": "images array is required"}), 400
     if len(images) > 30:
         return jsonify({"error": "max 30 images per request"}), 400
 
-    prompt = _book_prompt(chapter_title)
+    raw_count = data.get("question_count")
+    if raw_count is None:
+        raw_count = options.get("question_count")
+    question_count, qc_err = _normalize_question_count(raw_count)
+    if qc_err:
+        return jsonify({"error": qc_err}), 400
 
-    text = None
+    def call_one(prompt, max_tokens):
+        attempt_errs = []
+        for model in (GEMINI_FLASH, GEMINI_PRO):
+            try:
+                text, fmt = _gemini_book_call(
+                    prompt, images, model=model,
+                    timeout=270, max_tokens=max_tokens,
+                )
+                return text, fmt, model
+            except Exception as e:
+                attempt_errs.append(model + ": " + str(e))
+        raise RuntimeError("; ".join(attempt_errs) or "all book formats failed")
+
     fmt_used = None
     model_used = None
     errors = []
-    for model in (GEMINI_FLASH, GEMINI_PRO):
+    batch_meta = None
+
+    if question_count <= QC_BATCH_THRESHOLD:
+        prompt = _book_prompt(chapter_title, question_count=question_count)
         try:
-            text, fmt_used = _gemini_book_call(prompt, images, model=model, timeout=240)
-            model_used = model
-            break
+            text, fmt_used, model_used = call_one(prompt, _max_tokens_for_count(question_count))
         except Exception as e:
-            errors.append(model + ": " + str(e))
-            continue
-
-    if not text:
-        return jsonify({
-            "error": "Book chapter analysis failed across all model attempts.",
-            "details": errors[:5],
-        }), 502
-
-    try:
-        analysis = parse_json_response(text)
-    except json.JSONDecodeError as e:
-        return jsonify({
-            "error": "Gemini returned non-JSON output: " + str(e),
-            "raw_excerpt": text[:1500],
-            "model_used": model_used,
-        }), 500
-
-    # Sanitize quiz
-    if isinstance(analysis.get("quiz"), list):
-        cleaned = []
-        for q in analysis["quiz"]:
-            if not isinstance(q, dict):
-                continue
-            opts = q.get("options") or []
-            if not q.get("question") or not opts:
-                continue
-            correct_count = sum(1 for o in opts if isinstance(o, dict) and o.get("correct"))
-            if correct_count == 0:
-                continue
-            if correct_count > 1:
-                found = False
-                for o in opts:
-                    if isinstance(o, dict) and o.get("correct"):
-                        if found:
-                            o["correct"] = False
-                        else:
-                            found = True
-            for idx, o in enumerate(opts):
-                if isinstance(o, dict) and not o.get("label"):
-                    o["label"] = chr(65 + idx)
-            cleaned.append(q)
-        analysis["quiz"] = cleaned
+            return jsonify({
+                "error": "Book chapter analysis failed across all model attempts.",
+                "details": [str(e)],
+            }), 502
+        try:
+            analysis = parse_json_response(text)
+        except json.JSONDecodeError as e:
+            return jsonify({
+                "error": "Gemini returned non-JSON output: " + str(e),
+                "raw_excerpt": text[:1500],
+                "model_used": model_used,
+            }), 500
+        analysis["quiz"] = _sanitize_quiz_list(analysis.get("quiz") or [])
+    else:
+        def build_prompt_batched(per_count, focus_text):
+            return _book_prompt(chapter_title, question_count=per_count, batch_focus=focus_text)
+        result = _generate_quiz_in_batches(build_prompt_batched, call_one, question_count)
+        analysis = result["payload"] or {}
+        fmt_used = result["fmt_used"]
+        model_used = result["model_used"]
+        errors = result["errors"]
+        batch_meta = {"batches_run": result["batches_run"], "batches_ok": result["batches_ok"]}
+        if not analysis.get("quiz"):
+            return jsonify({
+                "error": "Batched book analysis returned no usable questions.",
+                "details": errors[:8],
+                "batches_run": result["batches_run"],
+                "batches_ok": result["batches_ok"],
+            }), 502
 
     analysis["concepts"] = analysis.get("key_concepts", [])
     analysis["fact_checks"] = analysis.get("fact_check", [])
@@ -1408,6 +1725,13 @@ def analyze_book_chapter_route():
     analysis["page_count"] = len(images)
     analysis["model_used"] = model_used
     analysis["format_used"] = fmt_used
+    analysis["requested_count"] = question_count
+    analysis["returned_count"] = len(analysis.get("quiz") or [])
+    analysis["processing_seconds"] = round(time.time() - t_start, 2)
+    if batch_meta:
+        analysis["batch_meta"] = batch_meta
+    if errors:
+        analysis["batch_warnings"] = errors[:5]
 
     return jsonify(analysis)
 

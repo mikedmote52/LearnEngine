@@ -269,6 +269,146 @@ textarea.field { padding: 14px var(--s-4); height: auto; min-height: 100px; resi
 .qdot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-default); transition: background var(--dur-fast) var(--ease-out); }
 .qdot.active { background: var(--accent); }
 .qdot.done { background: var(--text-tertiary); }
+
+/* For long quizzes (>24 questions) the dot strip wraps badly — use a continuous
+   progress bar with a numeric counter so 100-question quizzes stay legible on
+   mobile. */
+.quiz-progress-bar {
+  padding: var(--s-4) var(--s-4) 0;
+}
+.quiz-progress-bar-track {
+  height: 4px;
+  background: var(--border-default);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.quiz-progress-bar-fill {
+  position: absolute; top: 0; left: 0; bottom: 0;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width var(--dur-base) var(--ease-out);
+}
+.quiz-progress-bar-meta {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-top: 6px;
+  color: var(--text-tertiary);
+}
+.quiz-progress-bar-meta .qpb-current {
+  font-family: var(--font-mono);
+  font-size: 13px; font-weight: 500;
+  color: var(--text-primary);
+}
+.quiz-progress-bar-meta .qpb-total {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.quiz-progress-bar-meta .qpb-stamp {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ================= QUESTION-COUNT SELECTOR ================= */
+.qc-selector { margin-top: var(--s-6); }
+.qc-label {
+  font-size: 12px; font-weight: 500;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: var(--s-2);
+}
+.qc-pills {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--s-2);
+}
+.qc-pill, .qc-custom {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px;
+  padding: var(--s-2) 4px;
+  min-height: 60px;
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  text-align: center;
+}
+.qc-pill.on, .qc-custom.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.qc-pill-label {
+  font-size: 10px; line-height: 12px; font-weight: 500;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.qc-pill.on .qc-pill-label, .qc-custom.on .qc-pill-label { color: var(--accent); }
+.qc-pill-num {
+  font-family: var(--font-mono);
+  font-size: 17px; line-height: 22px; font-weight: 500;
+  color: var(--text-primary);
+}
+.qc-pill.on .qc-pill-num { color: var(--accent); }
+.qc-custom input {
+  background: transparent;
+  border: 0;
+  width: 48px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 17px; line-height: 22px; font-weight: 500;
+  color: var(--text-primary);
+  padding: 0;
+  -moz-appearance: textfield;
+}
+.qc-custom input::-webkit-outer-spin-button,
+.qc-custom input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.qc-custom input:focus { outline: none; }
+.qc-custom input::placeholder { color: var(--text-tertiary); }
+.qc-hint {
+  margin-top: var(--s-3);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+}
+.qc-cost {
+  margin-top: 6px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 15px;
+  font-style: italic;
+  font-family: var(--font-display);
+}
+
+/* Compact variant for camera overlay — same controls, tighter padding,
+   horizontally scrolling instead of grid so it never wraps awkwardly. */
+.qc-selector-compact {
+  position: absolute;
+  left: 12px; right: 12px;
+  bottom: 116px;
+  background: rgba(20, 19, 15, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: var(--r-md);
+  padding: var(--s-2) var(--s-3);
+  z-index: 5;
+}
+.qc-selector-compact .qc-label { margin-bottom: 6px; }
+.qc-selector-compact .qc-pills { grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.qc-selector-compact .qc-pill,
+.qc-selector-compact .qc-custom { min-height: 44px; }
+.qc-selector-compact .qc-pill-num,
+.qc-selector-compact .qc-custom input { font-size: 14px; line-height: 18px; }
+.qc-selector-compact .qc-pill-label { font-size: 9px; }
+.qc-selector-compact .qc-hint,
+.qc-selector-compact .qc-cost { display: none; }
 .q-stem { padding: var(--s-6) var(--s-4) var(--s-4); }
 .q-stem .qcaption { color: var(--text-tertiary); margin-bottom: var(--s-3); }
 .q-stem .qtext { color: var(--text-primary); }
@@ -836,7 +976,77 @@ const S = {
   toast: null,
   saveToFlashcards: true,     // default opt-in toggle state (per Mike's accepted default)
   promotedQuestionIdx: {},    // for results screen, quiz qIdx -> true
+  questionCount: 15,          // selected quiz length (5-100); persisted in localStorage
+  lastProcessingSeconds: null,// elapsed s reported by the analyze endpoint, surfaced on the quiz screen
 };
+
+// Persist the user's preferred count so it survives reloads / fresh sessions.
+try {
+  const saved = parseInt(localStorage.getItem('le_question_count') || '', 10);
+  if (!isNaN(saved) && saved >= 5 && saved <= 100) S.questionCount = saved;
+} catch (e) { /* localStorage may be blocked in private mode — fall back to default */ }
+
+const QUESTION_COUNT_PRESETS = [
+  { v: 15, label: 'Quick' },
+  { v: 30, label: 'Standard' },
+  { v: 50, label: 'Deep' },
+  { v: 100, label: 'Mastery' },
+];
+
+function setQuestionCount(n) {
+  const clamped = Math.max(5, Math.min(100, parseInt(n, 10) || 15));
+  S.questionCount = clamped;
+  try { localStorage.setItem('le_question_count', String(clamped)); } catch (e) {}
+  render();
+}
+
+function setCustomCount(input) {
+  const raw = parseInt(input.value, 10);
+  if (isNaN(raw)) return; // wait for a valid value
+  const clamped = Math.max(5, Math.min(100, raw));
+  S.questionCount = clamped;
+  try { localStorage.setItem('le_question_count', String(clamped)); } catch (e) {}
+  // Don't re-render here or the input loses focus mid-typing; just update state.
+  // The pill highlight refreshes on the next natural render (e.g., submit).
+}
+
+function renderCountSelector(opts) {
+  opts = opts || {};
+  const compact = !!opts.compact;
+  const cur = S.questionCount;
+  const isCustom = !QUESTION_COUNT_PRESETS.some(p => p.v === cur);
+  const wrapClass = compact ? 'qc-selector qc-selector-compact' : 'qc-selector';
+  const pills = QUESTION_COUNT_PRESETS.map(p => {
+    const on = (cur === p.v) ? 'on' : '';
+    return `<button type="button" class="qc-pill ${on}" onclick="setQuestionCount(${p.v})">
+              <span class="qc-pill-label">${p.label}</span>
+              <span class="qc-pill-num">${p.v}</span>
+            </button>`;
+  }).join('');
+  return `
+    <div class="${wrapClass}">
+      <div class="qc-label">Questions</div>
+      <div class="qc-pills">
+        ${pills}
+        <label class="qc-custom ${isCustom ? 'on' : ''}">
+          <span class="qc-pill-label">Custom</span>
+          <input type="number" min="5" max="100" inputmode="numeric"
+                 placeholder="—"
+                 value="${isCustom ? cur : ''}"
+                 oninput="setCustomCount(this)" />
+        </label>
+      </div>
+      ${compact ? '' : `
+        <div class="qc-hint">
+          Higher counts cover more concepts but take longer (Deep ≈ 60s, Mastery ≈ 2 min).
+        </div>
+        <div class="qc-cost">
+          More questions = slightly more API cost. Deep / Mastery still cost less than $0.01 per video.
+        </div>
+      `}
+    </div>
+  `;
+}
 
 function go(view, opts = {}) {
   S.view = view;
@@ -963,6 +1173,7 @@ function renderCaptureUrl(kind) {
       <input id="srcUrl" class="field" type="text" autocomplete="off" autofocus
              placeholder="${placeholder}" oninput="refreshSrcMeta('${kind}')" />
       <div id="srcMeta" class="muted" style="font-size: 13px; margin-top: var(--s-3); min-height: 18px;"></div>
+      ${renderCountSelector()}
       <div style="margin-top: var(--s-6);">
         <button id="processBtn" class="btn btn-primary btn-block"
                 onclick="${isPodcast ? 'processPodcast()' : 'processYoutube()'}"
@@ -1038,6 +1249,7 @@ async function processYoutube() {
     const profile = await getProfile();
     const learnerCtx = { learning_style: {}, weak_areas: [], strong_areas: [], overall_accuracy: 50 };
     let analysis, sourceId, transcript = '', title = '';
+    const requestedCount = S.questionCount || 15;
     if (manual) {
       sourceId = url ? ('yt_' + extractVideoId(url)) : ('manual_' + Date.now().toString(36));
       setProcStatus('Analyzing pasted transcript…');
@@ -1046,15 +1258,24 @@ async function processYoutube() {
     } else {
       const vid = extractVideoId(url);
       sourceId = 'yt_' + vid;
-      // Live counter shows elapsed seconds so the wait feels deliberate, not stuck.
-      stopCounter = startElapsedCounter('Asking Gemini to watch the video… (typically 45–75s) ·');
+      // Tailor the elapsed-time hint to the chosen depth so a 100-question wait
+      // doesn't feel like the proxy is stuck.
+      const expected = requestedCount >= 100 ? '~120–150s'
+                     : requestedCount >= 50  ? '~70–100s'
+                     : requestedCount >= 30  ? '~50–70s'
+                     : '~45–75s';
+      stopCounter = startElapsedCounter('Asking Gemini to watch the video… (typically ' + expected + ') ·');
       // Auto-retry once on first failure: cold-start aborts and transient
       // 5xx usually succeed on a second attempt against a now-warm function.
       let attempt = 0, lastErr = null;
       while (attempt < 2) {
         attempt++;
         try {
-          analysis = await api('/api/analyze-youtube', { youtube_url: url, options: { learner_context: learnerCtx } }, 240000);
+          analysis = await api('/api/analyze-youtube', {
+            youtube_url: url,
+            question_count: requestedCount,
+            options: { learner_context: learnerCtx },
+          }, 240000);
           lastErr = null;
           break;
         } catch (e) {
@@ -1070,6 +1291,7 @@ async function processYoutube() {
       const concepts = (analysis.key_concepts || analysis.concepts || []).map(c => c.name + ': ' + (c.explanation || '')).join('\n');
       transcript = [analysis.summary || '', (analysis.learning_objectives || []).join('\n'), concepts].filter(Boolean).join('\n\n');
     }
+    S.lastProcessingSeconds = (typeof analysis.processing_seconds === 'number') ? analysis.processing_seconds : null;
     if (analysis.error) throw new Error(analysis.error);
     sanitizeQuiz(analysis);
     const sourceRec = { source_id: sourceId, type: 'youtube', url: url || null, title: title || analysis.title || 'Video', analysis, transcript, processed_at: nowISO() };
@@ -1097,13 +1319,19 @@ async function processPodcast() {
     setProcStatus('Resolving podcast feed…');
     const profile = await getProfile();
     const learnerCtx = { learning_style: {}, weak_areas: [], strong_areas: [], overall_accuracy: 50 };
-    const result = await api('/api/analyze-podcast', { url, options: { learner_context: learnerCtx } }, 240000);
+    const requestedCount = S.questionCount || 15;
+    const result = await api('/api/analyze-podcast', {
+      url,
+      question_count: requestedCount,
+      options: { learner_context: learnerCtx },
+    }, 240000);
     if (result.error) {
       const err = new Error(result.message || result.error);
       err.payload = result;
       throw err;
     }
     sanitizeQuiz(result);
+    S.lastProcessingSeconds = (typeof result.processing_seconds === 'number') ? result.processing_seconds : null;
     const sourceId = 'pod_' + (result.episode_id || uid());
     const title = result.title || result.episode_title || 'Podcast episode';
     const sourceRec = { source_id: sourceId, type: 'podcast', url, title, analysis: result, transcript: result.summary || '', processed_at: nowISO() };
@@ -1197,6 +1425,7 @@ function renderBookCam() {
         <div class="cam-chip">Page ${pages.length + 1}${S.bookCapture?.chapterTitle ? ' / ' + E(S.bookCapture.chapterTitle) : ''}</div>
         <button class="cam-chip" onclick="exitBookCam()" aria-label="Cancel">✕</button>
       </div>
+      ${renderCountSelector({ compact: true })}
       <div class="cam-bottom">
         ${lastThumb ? `<img class="cam-thumb" src="${lastThumb}" alt="Last page" onclick="reviewBookPages()" />` : '<div class="cam-thumb"></div>'}
         <button class="cam-shutter" onclick="snapBookPage()" aria-label="Capture page"></button>
@@ -1292,9 +1521,15 @@ async function processBookPages(pages, chapterTitle) {
   try {
     setProcStatus('Sending ' + pages.length + ' page' + plural(pages.length, '') + ' to Gemini…');
     const images = pages.map(p => p.dataUrl);
-    const result = await api('/api/analyze-book-chapter', { images, chapter_title: chapterTitle || null }, 240000);
+    const requestedCount = S.questionCount || 15;
+    const result = await api('/api/analyze-book-chapter', {
+      images,
+      chapter_title: chapterTitle || null,
+      question_count: requestedCount,
+    }, 240000);
     if (result.error) throw new Error(result.error);
     sanitizeQuiz(result);
+    S.lastProcessingSeconds = (typeof result.processing_seconds === 'number') ? result.processing_seconds : null;
     const sourceId = 'bk_' + uid();
     const title = result.title || result.chapter_title || chapterTitle || 'Book chapter';
     const sourceRec = { source_id: sourceId, type: 'book', url: null, title, analysis: result, transcript: result.summary || '', processed_at: nowISO(), page_count: pages.length };
@@ -1336,20 +1571,44 @@ function renderQuiz() {
   const qs = q.questions || [];
   const total = qs.length;
   const answered = Object.keys(S.answers).length;
+  const stamp = (typeof S.lastProcessingSeconds === 'number')
+    ? ('Generated in ' + Math.round(S.lastProcessingSeconds) + 's')
+    : '';
 
-  let html = `<div class="quiz-progress">`;
-  for (let i = 0; i < total; i++) {
-    const cls = (i < answered) ? 'qdot done' : (i === answered ? 'qdot active' : 'qdot');
-    html += `<div class="${cls}"></div>`;
+  let html = '';
+  // For long quizzes (>24) the dot strip wraps badly — switch to a continuous
+  // progress bar with a numeric Q-of-N counter so 100-question quizzes stay
+  // legible on mobile. Below that threshold we keep the original dots which
+  // give better at-a-glance "where am I" feedback.
+  if (total > 24) {
+    const pct = total ? Math.round((answered / total) * 100) : 0;
+    html += `<div class="quiz-progress-bar">
+              <div class="quiz-progress-bar-track">
+                <div class="quiz-progress-bar-fill" style="width: ${pct}%;"></div>
+              </div>
+              <div class="quiz-progress-bar-meta">
+                <div>
+                  <span class="qpb-current">${answered}</span>
+                  <span class="qpb-total"> / ${total} answered</span>
+                </div>
+                <div class="qpb-stamp">${stamp ? E(stamp) : ''}</div>
+              </div>
+            </div>`;
+  } else {
+    html += `<div class="quiz-progress">`;
+    for (let i = 0; i < total; i++) {
+      const cls = (i < answered) ? 'qdot done' : (i === answered ? 'qdot active' : 'qdot');
+      html += `<div class="${cls}"></div>`;
+    }
+    html += `</div>`;
   }
-  html += `</div>`;
 
   html += `<div class="screen">`;
   html += `<div class="row-between" style="margin-bottom: var(--s-3);">
             <button class="btn-link" onclick="confirmExitQuiz()" aria-label="Exit">
               <svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
             </button>
-            <span class="t-caption tertiary">${q.quiz_type === 'followup' ? 'Adaptive follow-up' : (q.source_type || 'Quiz')}</span>
+            <span class="t-caption tertiary">${q.quiz_type === 'followup' ? 'Adaptive follow-up' : (q.source_type || 'Quiz')}${(total <= 24 && stamp) ? (' · ' + E(stamp)) : ''}</span>
           </div>`;
 
   qs.forEach((qu, i) => {
